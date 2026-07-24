@@ -1,0 +1,31 @@
+# Keil MDK 编译输出
+*.o
+*.d
+*.crf
+*.dep
+*.axf
+*.htm
+*.build_log.htm
+*.map
+*.lnp
+*.ie
+*.lst
+*.tra
+*.sct
+*.bak
+*.hex
+*.bin
+
+# IDE 和调试文件
+*.uvguix.*
+*.uvoptx
+*.scvd
+DebugConfig/
+EventRecorderStub.scvd
+*.dbgconf
+JLinkLog.txt
+JLinkSettings.ini
+
+# 编译器临时文件
+__prep*
+__main_*
