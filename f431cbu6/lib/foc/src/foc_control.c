@@ -96,8 +96,9 @@ void foc_control_speed_loop(foc_control_t *ctrl, float speed_fb)
     if (fb > -FOC_SPEED_DEADBAND && fb < FOC_SPEED_DEADBAND)
         fb = 0.0f;   /* 死区：静止/极低速时残留速度噪声不进入速度环 */
 
-    /* 速度环积分在零速附近衰减，防止噪声累积→保持振荡 */
-    if (ctrl->target_spd == 0.0f && fb == 0.0f)
+    /* 速度环积分在零速附近衰减，防止噪声累积→保持振荡
+     * 阈值1.0 elec rad/s ≈ 0.07 mech rad/s (≈0.7RPM)，覆盖AS5600低速噪声 */
+    if (ctrl->target_spd == 0.0f && fb > -1.0f && fb < 1.0f)
         ctrl->pi_spd.integral *= 0.95f;
 
     ctrl->target_iq = pi_update(&ctrl->pi_spd,
