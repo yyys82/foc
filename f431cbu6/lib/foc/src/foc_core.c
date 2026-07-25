@@ -46,7 +46,10 @@ void foc_core_init(foc_core_t *core,
 void foc_core_enable(foc_core_t *core)
 {
     core->enable = 1;
-    core->state  = FOC_STATE_ALIGN;
+    /* 绝对编码器: 开机对齐已存好 offset_rad, 电气角随时可由编码器算出,
+     * 无需再对齐。直接进 RUN, 否则状态机卡在 ALIGN 而电流环
+     * (if state!=RUN return) 永远零 PWM —— 表现为 enable/mode/target 都设了电机却不转。 */
+    core->state  = FOC_STATE_RUN;
 }
 
 void foc_core_disable(foc_core_t *core)

@@ -31,6 +31,7 @@ void comm_init(foc_comm_t *comm, foc_core_t *core, const hal_uart_t *uart);
 void comm_process_char(foc_comm_t *comm, char c);
 void comm_process_line(foc_comm_t *comm);
 void comm_tick(foc_comm_t *comm);
+void comm_banner(foc_comm_t *comm);   /* 上电横幅：打印结构化 STATUS: 行 + ready 提示 */
 
 #ifdef __cplusplus
 }

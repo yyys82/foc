@@ -166,16 +166,15 @@ void foc_main_init(void)
     foc_control_set_pid(&g_core.ctrl, FOC_CTRL_IQ,  0.24f, 5.9f, 0.0f);  /* 电流环 */
     foc_control_set_pid(&g_core.ctrl, FOC_CTRL_POS, 8.0f, 0.00f, 0.0f);  /* 位置环：纯P，低增益防保持振荡 */
 
-    /* 位置环：POSITION 模式 */
-    foc_control_set_mode(&g_core.ctrl, FOC_MODE_SPEED);
-    foc_control_set_target_spd(&g_core.ctrl, SPD_DBG_TARGET);
-
-    /* 启动 */
-    foc_core_enable(&g_core);
-    g_core.state = FOC_STATE_RUN;
+    /* 复位后默认安全静止：IDLE + 断电，等待上位机 enable / mode / target 命令
+     * 不调用 foc_core_enable → core->enable=0，电流环每个中断都会 set_duty(0,0,0) 清零，
+     * 电机彻底无输出（零矢量）。需要转动时用上位机发 enable + mode spd + target。 */
+//    foc_control_set_mode(&g_core.ctrl, FOC_MODE_SPEED);
+//    foc_control_set_target_spd(&g_core.ctrl, 120.0f);
 
     /* 通信 */
     comm_init(&g_comm, &g_core, &g_hal_uart);
+    g_hal_uart.init(115200);   /* 开启 USART1 RX 中断 + 接收环形缓冲，命令不再丢字节 */
     can_protocol_init(&g_can, &g_core, &g_hal_can, 1);
 
     /* TIM6 1kHz 速度环 */
@@ -185,6 +184,10 @@ void foc_main_init(void)
     HAL_NVIC_SetPriority(TIM6_DAC_IRQn, 1, 0);
     HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn);
     HAL_TIM_Base_Start_IT(&htim6);
+
+    /* 上电状态横幅：直接走 UART(printf/uart->tx)，网页连接即可看到初始 STATUS。
+     * 此时 core 已初始化为 IDLE + 断电（见上方默认安全静止段）。 */
+    comm_banner(&g_comm);
 }
 
 void foc_main_loop(void)
@@ -192,20 +195,20 @@ void foc_main_loop(void)
     static uint32_t last;
     uint32_t now = HAL_GetTick();
 
-    /* 打印诊断：位置, 目标位置, 速度, 目标速度, iq实测, iq目标, id, vq */
-    if (now - last >= IQ_DBG_PRINT_MS)
-    {
-        last = now;
-        float pos  = g_dbg_mech;
-        float tpos = g_core.ctrl.target_pos;
-        float spd  = foc_core_get_speed(&g_core);
-        float tspd = g_core.ctrl.target_spd;
-        float iq   = foc_core_get_iq(&g_core);
-        float tiq  = g_core.ctrl.target_iq;
-        float id   = foc_core_get_id(&g_core);
-        float vq   = g_core.ctrl.vq;
-        printf("%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\r\n", pos, tpos, spd, tspd, iq, tiq, id, vq);
-    }
+//    /* 打印诊断：位置, 目标位置, 速度, 目标速度, iq实测, iq目标, id, vq */
+//    if (now - last >= IQ_DBG_PRINT_MS)
+//    {
+//        last = now;
+//        float pos  = g_dbg_mech;
+//        float tpos = g_core.ctrl.target_pos;
+//        float spd  = foc_core_get_speed(&g_core);
+//        float tspd = g_core.ctrl.target_spd;
+//        float iq   = foc_core_get_iq(&g_core);
+//        float tiq  = g_core.ctrl.target_iq;
+//        float id   = foc_core_get_id(&g_core);
+//        float vq   = g_core.ctrl.vq;
+//        printf("%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\r\n", pos, tpos, spd, tspd, iq, tiq, id, vq);
+//    }
 
     comm_tick(&g_comm);
     __WFI();

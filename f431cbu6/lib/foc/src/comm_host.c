@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "stm32g4xx_hal.h"   /* NVIC_SystemReset() / __NOP() */
 
 static float _parse_float(const char *s) { return strtof(s, NULL); }
 
@@ -158,25 +159,65 @@ static void _cmd_monitor(foc_comm_t *comm, char *args[], int n)
     _send_str(comm, "\n");
 }
 
-static void _cmd_status(foc_comm_t *comm)
+static const char *_mode_str(foc_ctrl_mode_t m)
+{
+    switch (m)
+    {
+    case FOC_MODE_IDLE:     return "IDLE";
+    case FOC_MODE_TORQUE:   return "TORQUE";
+    case FOC_MODE_SPEED:    return "SPEED";
+    case FOC_MODE_POSITION: return "POSITION";
+    default:                return "?";
+    }
+}
+
+static const char *_state_str(foc_state_t s)
+{
+    switch (s)
+    {
+    case FOC_STATE_IDLE:   return "IDLE";
+    case FOC_STATE_CALIB:  return "CALIB";
+    case FOC_STATE_ALIGN:  return "ALIGN";
+    case FOC_STATE_RUN:    return "RUN";
+    case FOC_STATE_FAULT:  return "FAULT";
+    default:               return "?";
+    }
+}
+
+/* 结构化单行状态：网页据此解析渲染（见上位机 STATUS: 分支）。
+ * 同时供 status 命令与 comm_banner 上电横幅复用，保证格式一致。 */
+static void _emit_status(foc_comm_t *comm)
 {
     if (!comm->core) return;
-
-    char buf[128];
+    char buf[200];
     snprintf(buf, sizeof(buf),
-             "state=%d mode=%d fault=%d en=%d\n"
-             " pos=%.3f spd=%.3f id=%.3f iq=%.3f\n"
-             " vbus=%.1f\n",
-             (int)foc_core_get_state(comm->core),
-             (int)foc_control_get_mode(&comm->core->ctrl),
-             (int)foc_core_get_fault(comm->core),
+             "STATUS: mode=%s en=%d state=%s fault=%d vbus=%.1f pos=%.3f spd=%.3f id=%.3f iq=%.3f\r\n",
+             _mode_str(foc_control_get_mode(&comm->core->ctrl)),
              foc_core_is_enabled(comm->core),
+             _state_str(foc_core_get_state(comm->core)),
+             (int)foc_core_get_fault(comm->core),
+             foc_core_get_vbus(comm->core),
              foc_core_get_angle(comm->core),
              foc_core_get_speed(comm->core),
              foc_core_get_id(comm->core),
-             foc_core_get_iq(comm->core),
-             foc_core_get_vbus(comm->core));
+             foc_core_get_iq(comm->core));
     _send_str(comm, buf);
+}
+
+static void _cmd_status(foc_comm_t *comm)
+{
+    _emit_status(comm);
+}
+
+/* 上电横幅：foc_main_init 末尾调用，直接走 UART（printf/uart->tx），
+ * 不依赖 comm_tick，网页一旦连接即可看到初始状态。 */
+void comm_banner(foc_comm_t *comm)
+{
+    /* 同步头：复位后串口刚重新初始化，前几个字节常因 GPIO/AF 切换瞬态丢失；
+       先发空行唤醒接收端帧同步，后续 STATUS: 行即可完整解析 */
+    _send_str(comm, "\r\n\r\n");
+    _emit_status(comm);
+    _send_str(comm, "FOC ready (IDLE). Send 'help' for commands.\r\n");
 }
 
 static void _cmd_encoder(foc_comm_t *comm)
@@ -203,6 +244,36 @@ static void _cmd_stop(foc_comm_t *comm)
     _send_str(comm, "OK: stopped\n");
 }
 
+/* 标准软件复位：先关闭所有可屏蔽中断，再请求系统复位。
+ * 否则电流环等高优先级 ISR(ADC 注入触发)可能在复位请求发出后、
+ * 复位真正生效前仍运行，导致拉出异常 PWM / 复位不干净。 */
+static void System_Reset(void)
+{
+    __disable_irq();        /* PRIMASK=1：关闭所有可屏蔽中断 */
+    __set_FAULTMASK(1);     /* 同时屏蔽 fault 异常，确保复位前 ISR 完全静默 */
+    __DSB();                /* 保证上面的写操作已生效 */
+
+    /* 直接写 AIRCR 请求系统复位（等价于 NVIC_SystemReset 内部操作，
+       显式写出以避免任何工具链内联/排序边缘问题） */
+    SCB->AIRCR = (uint32_t)((0x5FAUL << SCB_AIRCR_VECTKEY_Pos) |
+                            SCB_AIRCR_SYSRESETREQ_Msk);
+    __DSB();                /* 保证 AIRCR 写完成，触发复位 */
+    for (;;) __NOP();       /* 等待复位生效 */
+}
+uint16_t a=0;
+static void _cmd_reset(foc_comm_t *comm)
+{
+    if (comm->uart && comm->uart->tx)
+    {
+        _send_str(comm, "OK: reset MCU\r\n");
+			a=1;
+        /* polled tx 同步，_send_str 返回时字节已进移位寄存器；
+           加短延时保险，确保 "OK" 行完整离开串口再复位 */
+        for (volatile uint32_t i = 0; i < 300000; i++) __NOP();
+    }
+    System_Reset();
+}
+
 static void _cmd_help(foc_comm_t *comm)
 {
     _send_str(comm,
@@ -216,6 +287,7 @@ static void _cmd_help(foc_comm_t *comm)
         "  encoder                    read raw encoder angle\n"
         "  calib                      calibrate current offset\n"
         "  stop                       emergency stop\n"
+        "  reset                      soft reset MCU (FAULTMASK + NVIC_SystemReset)\n"
         "  help                       show this message\n"
     );
 }
@@ -243,6 +315,7 @@ void comm_process_line(foc_comm_t *comm)
     else if (strcmp(args[0], "calib") == 0)  _cmd_calib(comm);
     else if (strcmp(args[0], "encoder") == 0) _cmd_encoder(comm);
     else if (strcmp(args[0], "stop") == 0)   _cmd_stop(comm);
+    else if (strcmp(args[0], "reset") == 0)  _cmd_reset(comm);
     else if (strcmp(args[0], "help") == 0)   _cmd_help(comm);
     else
     {
