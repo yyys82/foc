@@ -146,7 +146,12 @@ void foc_core_loop_speed(foc_core_t *core)
     foc_control_speed_loop(&core->ctrl, core->sense.encoder.speed);
 }
 
+extern float g_dbg_mech;   /* hal_stm32g4_encoder.c: 多圈机械角(rad) */
+
 void foc_core_loop_position(foc_core_t *core)
 {
-    foc_control_position_loop(&core->ctrl, core->sense.encoder.angle.rad);
+    /* 位置环用多圈机械角，不用电角度（电角度 wrap 会跳变，一圈内14个周期无法区分位置） */
+    /* 输出 × pole_pairs → 电角速度，匹配速度环反馈单位 */
+    foc_control_position_loop(&core->ctrl, g_dbg_mech);
+    core->ctrl.target_spd *= core->sense.encoder.pole_pairs;
 }

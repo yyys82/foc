@@ -93,9 +93,13 @@ void MX_TIM3_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN TIM3_Init 2 */
-  /* CH4: PWM1模式产生OC4REF上升沿→ADC触发 (不输出到引脚) */
+  /* CH4: 产生 OC4REF 上升沿 → 触发 ADC 注入采样。
+   * 用 PWM 模式2(OC4M=7)：CNT>=CCR4 时 OC4REF 拉高，上升沿落在 CNT=3349，
+   * 此时三相低边导通、采样电阻有真实相电流。CCR4=3349 距顶部 50 计数(~294ns)，
+   * 恰好留出 12.5 周期采样窗在重载前完成。
+   * （原为 PWM 模式1(OC4M=6)，上升沿在 CNT=0=高边全开→采样电阻无电流，恒读0，已修正） */
   TIM3->CCR4 = 3349;
-  TIM3->CCMR2 = (TIM3->CCMR2 & ~TIM_CCMR2_OC4M) | (6UL << TIM_CCMR2_OC4M_Pos);
+  TIM3->CCMR2 = (TIM3->CCMR2 & ~TIM_CCMR2_OC4M) | (7UL << TIM_CCMR2_OC4M_Pos);
   TIM3->CCER &= ~TIM_CCER_CC4E;
   /* USER CODE END TIM3_Init 2 */
   HAL_TIM_MspPostInit(&htim3);

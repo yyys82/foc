@@ -12,16 +12,18 @@ extern "C" {
 #define FOC_SQRT3_2       0.86602540378444f   /* √3/2 */
 #define FOC_INV_SQRT3     0.57735026918963f   /* 1/√3 */
 
-/* 控制循环时序 (默认 10kHz 电流环, 1kHz 速度环, 200Hz 位置环) */
-#define FOC_CURRENT_LOOP_FREQ_HZ  10000.0f
-#define FOC_SPEED_LOOP_DIV        10
-#define FOC_POS_LOOP_DIV          5
+/* 控制循环时序 (实际 25kHz 电流环, 1kHz 速度环, 200Hz 位置环) */
+#define FOC_CURRENT_LOOP_FREQ_HZ  25000.0f
+#define FOC_SPEED_LOOP_DIV        25  /* 电流环:速度环 = 25:1，仅用于推导 FOC_DT_SPEED(=1/1000)，非循环计数器 */
+#define FOC_POS_LOOP_DIV          5   /* 速度环:位置环 = 5:1，FOC_DT_POSITION=1/200 */
 #define FOC_DT_CURRENT            (1.0f / FOC_CURRENT_LOOP_FREQ_HZ)
 #define FOC_DT_SPEED              (FOC_DT_CURRENT * FOC_SPEED_LOOP_DIV)
 #define FOC_DT_POSITION           (FOC_DT_SPEED * FOC_POS_LOOP_DIV)
 
 /* 默认运行限幅 */
 #define FOC_CURRENT_LIMIT_DEFAULT     10.0f   /* 电流限幅 [A] */
+#define FOC_SPEED_DEADBAND            0.0f    /* 速度环反馈死区：关闭(编码器驱动内已有滑动窗口滤波) */
+#define FOC_POS_DEADBAND              0.003f  /* 位置环死区 [mech rad]：AS5600 1LSB≈0.0015rad，死区取2LSB */
 #define FOC_SPEED_LIMIT_DEFAULT       300.0f  /* 速度限幅 [rad/s] */
 #define FOC_VOLTAGE_LIMIT_DEFAULT     24.0f   /* 电压限幅 [V] */
 #define FOC_VOLTAGE_LIMIT_RATIO       0.95f   /* SVPWM 最大调制比 */

@@ -1,7 +1,7 @@
 /*
  * STM32G4 INA240 双电阻电流 — 注入 TRGO 硬件触发 + 中断读取
  *   TIM3 OC4REF → TRGO → ADC1/2 Injected → JEOC中断
- *   中断里读 JDR1 存全局变量，TIM6 ISR 跑电流环
+ *   中断里直接读 JDR1，电流环就在本中断内执行（25kHz，每2次ADC触发）
  *   INA240: gain=50V/V, Rs=0.01Ω, Vref=1.65V
  */
 #include "hal/hal_current.h"

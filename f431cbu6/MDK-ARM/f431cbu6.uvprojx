@@ -1007,31 +1007,6 @@
               <FilePath>..\lib\foc\src\svpwm.c</FilePath>
             </File>
             <File>
-              <FileName>hal_stm32g4_can.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\lib\foc\hal\hal_stm32g4_can.c</FilePath>
-            </File>
-            <File>
-              <FileName>hal_stm32g4_current.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\lib\foc\hal\hal_stm32g4_current.c</FilePath>
-            </File>
-            <File>
-              <FileName>hal_stm32g4_encoder.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\lib\foc\hal\hal_stm32g4_encoder.c</FilePath>
-            </File>
-            <File>
-              <FileName>hal_stm32g4_pwm.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\lib\foc\hal\hal_stm32g4_pwm.c</FilePath>
-            </File>
-            <File>
-              <FileName>hal_stm32g4_uart.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\lib\foc\hal\hal_stm32g4_uart.c</FilePath>
-            </File>
-            <File>
               <FileName>can_protocol.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\lib\foc\include\can_protocol.h</FilePath>
@@ -1130,6 +1105,31 @@
               <FileName>foc_main_g431.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\foc_app\foc_main_g431.h</FilePath>
+            </File>
+            <File>
+              <FileName>hal_stm32g4_can.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\lib\foc\hal\hal_stm32g4_can.c</FilePath>
+            </File>
+            <File>
+              <FileName>hal_stm32g4_current.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\lib\foc\hal\hal_stm32g4_current.c</FilePath>
+            </File>
+            <File>
+              <FileName>hal_stm32g4_encoder.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\lib\foc\hal\hal_stm32g4_encoder.c</FilePath>
+            </File>
+            <File>
+              <FileName>hal_stm32g4_pwm.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\lib\foc\hal\hal_stm32g4_pwm.c</FilePath>
+            </File>
+            <File>
+              <FileName>hal_stm32g4_uart.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\lib\foc\hal\hal_stm32g4_uart.c</FilePath>
             </File>
           </Files>
         </Group>

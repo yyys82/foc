@@ -264,7 +264,7 @@ void ADC1_2_IRQHandler(void)
     ADC2->ISR = ADC_ISR_JEOC | ADC_ISR_JEOS;
 
     g_tim6_count++;
-    if (g_tim6_count & 1) return;
+    if (g_tim6_count & 1) return;   /* ADC 触发50kHz，分频→电流环25kHz，匹配 FOC_DT_CURRENT=40us */
 
     foc_core_loop_current(&g_core);
 }

@@ -92,8 +92,16 @@ void foc_control_speed_loop(foc_control_t *ctrl, float speed_fb)
     if (ctrl->mode == FOC_MODE_IDLE)    return;
     if (ctrl->mode == FOC_MODE_TORQUE)  return;
 
+    float fb = speed_fb;
+    if (fb > -FOC_SPEED_DEADBAND && fb < FOC_SPEED_DEADBAND)
+        fb = 0.0f;   /* 死区：静止/极低速时残留速度噪声不进入速度环 */
+
+    /* 速度环积分在零速附近衰减，防止噪声累积→保持振荡 */
+    if (ctrl->target_spd == 0.0f && fb == 0.0f)
+        ctrl->pi_spd.integral *= 0.95f;
+
     ctrl->target_iq = pi_update(&ctrl->pi_spd,
-                                ctrl->target_spd - speed_fb,
+                                ctrl->target_spd - fb,
                                 ctrl->dt_speed);
 
     if (ctrl->target_iq > ctrl->current_limit)
@@ -106,9 +114,13 @@ void foc_control_position_loop(foc_control_t *ctrl, float pos_fb)
 {
     if (ctrl->mode != FOC_MODE_POSITION) return;
 
-    ctrl->target_spd = pi_update(&ctrl->pi_pos,
-                                  ctrl->target_pos - pos_fb,
-                                  ctrl->dt_position);
+    float pos_err = ctrl->target_pos - pos_fb;
+
+    /* 位置死区：到位后AS5600噪声不产生速度指令，消除保持振荡 */
+    if (pos_err > -FOC_POS_DEADBAND && pos_err < FOC_POS_DEADBAND)
+        pos_err = 0.0f;
+
+    ctrl->target_spd = pi_update(&ctrl->pi_pos, pos_err, ctrl->dt_position);
 
     if (ctrl->target_spd > ctrl->speed_limit)
         ctrl->target_spd = ctrl->speed_limit;

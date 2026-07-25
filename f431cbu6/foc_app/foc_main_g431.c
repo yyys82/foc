@@ -1,6 +1,6 @@
 /* STM32G431 FOC — 应用层
  * TIM3  -> PWM (50kHz)
- * TIM6  -> 电流环 ISR (10kHz)
+ * TIM6  -> 速度环/位置环 ISR (1kHz / 200Hz)；电流环在 ADC 注入中断 (25kHz)
  * USART1 -> printf + 上位机
  * FDCAN1 -> CAN 控制
  */
@@ -16,6 +16,7 @@ extern const hal_pwm_t     g_hal_pwm;
 extern const hal_uart_t    g_hal_uart;
 extern const hal_can_t     g_hal_can;
 extern uint8_t g_openloop;
+extern float   g_dbg_mech;
 
 foc_core_t  g_core;
 foc_comm_t  g_comm;
@@ -27,6 +28,11 @@ static const foc_motor_params_t g_motor = {
     .flux_linkage = 0.0072f, .pole_pairs = 14,
     .rated_current = 15.0f, .max_speed = 300.0f,
 };
+
+/* ===== 调试开关 ===== */
+#define IQ_DBG_PRINT_MS 5       /* 打印周期 (ms)，200Hz @115200 */
+#define SPD_DBG_TARGET  120.0f   /* 速度环目标 (rad/s)，调试用；调完改 0 或上位机给 */
+#define POS_DBG_TARGET  10.0f   /* 位置环目标 (mech rad)，调试用 */
 
 int fputc(int ch, FILE *f)
 {
@@ -52,7 +58,11 @@ static void _do_alignment(void)
     }
 
     float raw = g_hal_encoder.get_angle();
-    g_core.sense.encoder.offset_rad = raw * g_motor.pole_pairs;
+    /* 修复：旋转磁场结束在 elec=angle(=10.0rad ≡ 3.67rad≈210°)，转子磁通真实电角度=3.67；
+     * 若按"转子停在 elec=0"存 offset(=raw*pp)，会引入 ~210° 固定电角度误差，
+     * 使 Park 帧旋转 210° → iq_fb 反号(正反馈) + 电流灌错轴(无转矩/抖动)。
+     * 修正：offset = raw*pp - angle，使 elec=0 对应磁通真实位置。 */
+    g_core.sense.encoder.offset_rad = raw * g_motor.pole_pairs - angle;
     printf("align: raw=%.3f off=%.3f\r\n", raw, g_core.sense.encoder.offset_rad);
 
     g_hal_pwm.set_duty(0, 0, 0);
@@ -96,6 +106,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 void foc_main_init(void)
 {
+    /* DWT 时基：须在编码器/电流初始化之前使能，保证时间戳基准一致
+     * （原先放在函数末尾，导致编码器首次时间戳基于复位前的 CYCCNT，dt 算成 ~25s → 速度估算爆掉） */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CTRL |= 1;
+    DWT->CYCCNT = 0;
+
     g_openloop = 0;  /* 编码器模式，对齐修复后 */
 
     /* HAL 初始化 */
@@ -146,16 +162,13 @@ void foc_main_init(void)
     foc_control_reset_all(&g_core.ctrl);
 
     /* PID */
-    foc_control_set_pid(&g_core.ctrl, FOC_CTRL_SPD, 0.01f, 0.02f, 0.0f);
-    foc_control_set_pid(&g_core.ctrl, FOC_CTRL_IQ,  0.8f, 0.9f, 0.0f);
+    foc_control_set_pid(&g_core.ctrl, FOC_CTRL_SPD, 0.18f, 0.15f, 0.0f);  /* 速度环：低增益匹配AS5600低速分辨率 */
+    foc_control_set_pid(&g_core.ctrl, FOC_CTRL_IQ,  0.24f, 5.9f, 0.0f);  /* 电流环 */
+    foc_control_set_pid(&g_core.ctrl, FOC_CTRL_POS, 8.0f, 0.00f, 0.0f);  /* 位置环：纯P，低增益防保持振荡 */
 
-    /* 速度模式 */
+    /* 位置环：POSITION 模式 */
     foc_control_set_mode(&g_core.ctrl, FOC_MODE_SPEED);
-    foc_control_set_target_spd(&g_core.ctrl, 20.0f);
-
-    /* 扭矩模式 */
-    foc_control_set_mode(&g_core.ctrl, FOC_MODE_TORQUE);
-    foc_control_set_target_iq(&g_core.ctrl, 0.0f);
+    foc_control_set_target_spd(&g_core.ctrl, SPD_DBG_TARGET);
 
     /* 启动 */
     foc_core_enable(&g_core);
@@ -172,11 +185,6 @@ void foc_main_init(void)
     HAL_NVIC_SetPriority(TIM6_DAC_IRQn, 1, 0);
     HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn);
     HAL_TIM_Base_Start_IT(&htim6);
-
-    /* DWT */
-    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    DWT->CTRL |= 1;
-    DWT->CYCCNT = 0;
 }
 
 void foc_main_loop(void)
@@ -184,14 +192,19 @@ void foc_main_loop(void)
     static uint32_t last;
     uint32_t now = HAL_GetTick();
 
-    if (now - last >= 50)
+    /* 打印诊断：位置, 目标位置, 速度, 目标速度, iq实测, iq目标, id, vq */
+    if (now - last >= IQ_DBG_PRINT_MS)
     {
         last = now;
-        float spd = foc_core_get_speed(&g_core);
-        float tsp = g_core.ctrl.target_spd;
-        float iq  = foc_core_get_iq(&g_core);
-        float tiq = g_core.ctrl.target_iq;
-        printf("%.2f,%.2f,%.2f,%.2f\r\n", spd, tsp, iq, tiq);
+        float pos  = g_dbg_mech;
+        float tpos = g_core.ctrl.target_pos;
+        float spd  = foc_core_get_speed(&g_core);
+        float tspd = g_core.ctrl.target_spd;
+        float iq   = foc_core_get_iq(&g_core);
+        float tiq  = g_core.ctrl.target_iq;
+        float id   = foc_core_get_id(&g_core);
+        float vq   = g_core.ctrl.vq;
+        printf("%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\r\n", pos, tpos, spd, tspd, iq, tiq, id, vq);
     }
 
     comm_tick(&g_comm);
