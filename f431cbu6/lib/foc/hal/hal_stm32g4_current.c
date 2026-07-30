@@ -15,22 +15,27 @@ static void _init(void)
     HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
     HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED);
 
-    HAL_ADC_Start(&hadc1);
-    HAL_ADC_Start(&hadc2);
-    HAL_ADCEx_InjectedStart(&hadc1);
-    HAL_ADCEx_InjectedStart(&hadc2);
+    /* 双 ADC 注入同步 (ADC_DUALMODE_INJECSIMULT)：
+     * 启动顺序先从机(ADC2)后主机(ADC1)。从机在同步模式下只使能、不启动，
+     * 跟随主机；主机 InjectedStart 把 JADSTART arm 到下一个 T3_TRGO 触发。
+     * 规则组不用（vbus 为常量），故不再 HAL_ADC_Start。 */
+    HAL_ADCEx_InjectedStart(&hadc2);   /* 从机：使能，跟随主机 */
+    HAL_ADCEx_InjectedStart(&hadc1);   /* 主机：arm 注入转换 */
 
-    /* 只开 ADC2 的注入完成中断。ADC1/ADC2 由同一 TRGO 同步触发、采样时间相同，
-     * ADC2 的 JEOC 到来时 ADC1 必然也已完成 → 每个 PWM 周期恰好进一次
-     * ADC1_2_IRQHandler，在 ISR 里一次性读两个 JDR1。避免了两个 JEOC 先后置位
-     * 导致共享中断双入口、需要 &1 分频的脆弱时序。电流环触发率 = PWM 频率。 */
-    ADC2->IER |= ADC_IER_JEOCIE;
+    /* 只开主机(ADC1)的注入完成中断：同步模式下两机同时完成，主机 JEOC 到来时
+     * 从机 JDR1 必然已就绪，ISR 里一次读两个 JDR1。从机 JEOCIE 保持关闭 →
+     * 每个 PWM 周期单入口（切勿再开 ADC2 JEOCIE 或 JEOSIE，否则双入口倍频）。 */
+    ADC2->IER &= ~ADC_IER_JEOCIE;      /* 显式保险 */
+    ADC1->IER |= ADC_IER_JEOCIE;
 }
 
 static void _read(float *ia, float *ib, float *ic)
 {
-    uint32_t v1 = (uint16_t)(ADC1->JDR1 & 0xFFFF);
-    uint32_t v2 = (uint16_t)(ADC2->JDR1 & 0xFFFF);
+    /* 注入同步下两机同刻采样、同刻完成；在本(主机 JEOC)中断里读两个 JDR1 均为本拍新值。
+     * 不变量：从机(ADC2)采样时间/序列长度 不得大于 主机(ADC1)，否则从机晚完成、
+     * 主机 JEOC 会读到从机上一拍 JDR。当前两边同为 12.5cyc、JL=0，满足。 */
+    uint32_t v1 = (uint16_t)(ADC1->JDR1 & 0xFFFF);   /* ADC1=PA3，采 V 相 → ib */
+    uint32_t v2 = (uint16_t)(ADC2->JDR1 & 0xFFFF);   /* ADC2=PB11，采 W 相 → ic */
 
     float va = (float)v1 * 3.3f / 4096.0f;
     float vb = (float)v2 * 3.3f / 4096.0f;

@@ -21,7 +21,7 @@ extern "C" {
 #define FOC_DT_POSITION           (FOC_DT_SPEED * FOC_POS_LOOP_DIV)
 
 /* 默认运行限幅 */
-#define FOC_CURRENT_LIMIT_DEFAULT     10.0f   /* 电流限幅 [A] */
+#define FOC_CURRENT_LIMIT_DEFAULT     2.5f    /* 电流命令限幅 [A]：≤3A 小电流应用，留 0.5A 裕量到 3.0A 过流故障点；如需更大连续电流须降增益/减 Rs */
 #define FOC_SPEED_DEADBAND            0.0f    /* 速度环反馈死区：关闭(编码器驱动内已有滑动窗口滤波) */
 #define FOC_POS_DEADBAND              0.003f  /* 位置环死区 [mech rad]：AS5600 1LSB≈0.0015rad，死区取2LSB */
 #define FOC_SPEED_LIMIT_DEFAULT       300.0f  /* 速度限幅 [rad/s] */

@@ -1,19 +1,26 @@
 /*
- * STM32G4 AS5600 磁编码器 (I2C2 DMA)
- *   ISR内非阻塞: 检查上次DMA是否完成 → 处理数据 → 启动新DMA
- *   DMA未完成时: 速度外推填补
- *   get_angle: 多圈机械角度 rad
- *   get_speed: 机械角速度 rad/s
+ * STM32G4 AS5600 磁编码器 (I2C2 DMA) —— 发布端/消费端架构
  *
- * 时序:
- *   ISR_t:  DMA done? → process + restart DMA → 正常角度
- *   ISR_t+1: DMA busy → extrapolate (speed × dt_call, dt 由 DWT 实测)
- *   ISR_t+2: DMA done? → process + restart DMA → 新角度
+ *   发布端 = HAL_I2C_MemRxCpltCallback。
+ *     真实执行上下文是 DMA1_Channel1_IRQHandler（HAL master-receive-DMA 路径：
+ *     DMA TC → DMA1_Channel1 ISR → HAL 内部 → 本回调）。该中断在 foc_main_init
+ *     里被设为优先级 1，可被电流环 ADC ISR(prio0) 抢占 → 电流环抖动归零。
+ *     职责：收完 2 字节 → 解算(防抖 sanity + 解缠 + 滑动窗口测速) → 短临界区发布
+ *     快照 → 背靠背重启下一次 DMA 读（顶到 I2C 极限 ~120µs/次 ≈ 8kHz，消除原先
+ *     "等下一次电流环 ISR 才重启"的最长 ~40µs 空转）。
  *
- * 注意: 本编码器在电流环 ADC 注入中断内被调用 (25kHz)，而非 TIM6。
- *       调用间隔由 DWT CYCCNT 实测，不再假设固定频率，避免速度/外推时基错误。
+ *   消费端 = get_angle（电流环 ADC ISR prio0 + 线程态对齐/位置环）。
+ *     短临界区拷贝 3-float 快照 → predicted = 真实角 + 速度×(now-发布时刻)。
+ *     不碰任何 I2C/状态机/重启。发现 >500µs 无新角度 → 仅置 _need_recovery 标志
+ *     并钳住外推(时长上限 + 速度衰减)防飞车；真正的阻塞恢复在线程态
+ *     encoder_try_recovery()（foc_main_loop 调用），避免在电流环 ISR 里阻塞。
  *
- * 本文件替换 HAL 弱回调 HAL_I2C_MemRxCpltCallback 来清除 _busy 标志。
+ *   撕裂防护：发布端(prio1)可抢占线程态读者、电流环(prio0)可抢占发布端，故发布/
+ *     读取快照都用 PRIMASK 短临界区（3 条访存，<100ns，对 40µs 电流环可忽略）。
+ *   单写者：角度内部状态只由发布端写（首次建基准/线程态恢复为例外，均在临界区内）。
+ *
+ *   调试计数 _pub_seq/_to_cnt/_suspect_cnt/_err_cnt 可经 comm/printf 暴露用于验证。
+ *   本文件覆盖 HAL 弱符号 HAL_I2C_MemRxCpltCallback / HAL_I2C_ErrorCallback。
  */
 
 #include "hal/hal_encoder.h"
@@ -23,59 +30,194 @@
 
 #define AS5600_RESOLUTION  4096.0f
 #define _2PI               6.28318530718f
-#define FOC_HCLK_HZ        170000000.0f  /* G431 HCLK = 170MHz，DWT 计数频率 */
-#define AS5600_DIR_SIGN    1   /* 编码器方向：原"负向飞车"实为速度估算垃圾(DWT bug，spd=-847 物理不可能)，非符号问题；
-                                    故不翻编码器，保留电流采样反转(C_flip=1)作为电流环正反馈的真修复。若重烧仍抖动/反向，改 -1 试。 */
-#define SPD_EST_WINDOW     128   /* 速度估计滑动窗口：128次真实读(~10ms)，低速1LSB量化误差被平均到<0.1rad/s */
+#define RAD_PER_COUNT      (_2PI / AS5600_RESOLUTION)
+#define FOC_HCLK_HZ        170000000.0f   /* G431 HCLK = 170MHz，DWT 计数频率 */
+#define AS5600_DIR_SIGN    1   /* 编码器方向：若重烧仍抖动/反向，改 -1 试。 */
+#define SPD_EST_WINDOW     64    /* 速度估计滑动窗口：~8kHz 真实更新下 ≈8ms、滞后≤4ms，
+                                    低速 1LSB 量化误差被平均、静止速度≈0；如响应慢可减到 32 */
+#define ENC_STEP_MAX       0.3f  /* 单步合法性阈值 rad：300rad/s@8kHz≈0.0375，取 ~8× 裕量；
+                                    超阈值判为 I2C 脏读，丢这一拍（连续丢→看门狗兜底） */
+#define ENC_WDG_S          0.0005f  /* 500µs 无新角度 → 标记需线程态恢复（正常 ~125µs/次） */
+#define SPD_VALID_MAX      1000.0f  /* 速度合法性上限 rad/s（机械上限 300） */
 
+/* ---- 发布端内部状态（只由发布端写；首次建基准/线程态恢复在临界区内例外写） ---- */
 static int32_t  _prev_raw_val;
-static uint32_t _last_real_cyc;    /* 上次真实读的 DWT 计数值 */
-static uint32_t _call_cyc;         /* 上次 get_angle 调用的 DWT 计数值 */
-static float    _full_turns;
-static float    _cached_angle;
-static float    _mech_speed;
-static float    _prev_real_angle;
-static uint32_t _real_cnt;         /* 上次真实读的 ISR 计数 */
-static uint32_t _isr_cnt;         /* _get_angle 调用次数 */
-static uint8_t  _dma_buf[2];
-static uint8_t  _busy;            /* 1=DMA传输中 */
-static uint32_t _busy_cnt;        /* busy 计数器，超时则恢复 */
+static float    _full_turns;       /* 累计整圈 (rad) */
+static float    _real_angle;       /* 解缠后真实机械角 = _full_turns + 单圈角 */
+static uint32_t _last_real_cyc;    /* 发布端内部测速时基 */
+static float    _mech_speed;       /* 机械角速度 (rad/s) */
+static float    _spd_acc;
+static uint32_t _spd_acc_cyc;
+static int      _spd_samples;
+
+/* ---- 发布快照（发布端写、消费端读，均经临界区） ---- */
+static volatile float    _pub_angle;
+static volatile float    _pub_speed;
+static volatile uint32_t _pub_last_cyc;
+static volatile uint8_t  _need_recovery;
+
+/* ---- 调试计数 ---- */
+static volatile uint32_t _pub_seq, _to_cnt, _suspect_cnt, _err_cnt;
+
+static uint8_t  _dma_buf[2];       /* 发布端私有 DMA 缓冲 */
 static uint8_t  _ready;
-static float    _spd_acc;        /* 窗口内累计干净机械角差(rad) */
-static uint32_t _spd_acc_cyc;    /* 窗口内累计 DWT 周期 */
-static int      _spd_samples;    /* 窗口内真实读计数 */
 
 uint8_t g_openloop;  /* 1=合成角开环, 0=编码器 */
-float   g_dbg_mech;  /* 调试：最近一次机械角(多圈, rad) */
+float   g_dbg_mech;  /* 调试：最近一次返回的机械角(多圈, rad)；200Hz 位置环也读它 */
+
+/* 临界区发布快照 */
+static void _publish(float angle, uint32_t now_cyc)
+{
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    _pub_angle    = angle;
+    _pub_speed    = _mech_speed;
+    _pub_last_cyc = now_cyc;
+    __set_PRIMASK(pm);
+    _pub_seq++;
+}
+
+/* 发布端主体：解算一帧角度 → 发布 → 背靠背重启 DMA */
+static void _on_i2c_done(void)
+{
+    uint32_t now_cyc = DWT->CYCCNT;
+    int32_t raw = (int32_t)((((uint16_t)_dma_buf[0]) << 8) | (uint16_t)_dma_buf[1]) & 0x0FFF;
+
+    float a  = (float)raw * RAD_PER_COUNT;
+    float pa = (float)_prev_raw_val * RAD_PER_COUNT;
+    float da = a - pa;
+
+    /* 归一化单步到 (-π, π]，并记录解缠方向（沿用原符号约定：da>π ⇒ _full_turns-=2π） */
+    float step = da;
+    int wrap = 0;
+    if (step > 3.14159f)       { step -= _2PI; wrap = -1; }
+    else if (step < -3.14159f) { step += _2PI; wrap = +1; }
+
+    if (step <= ENC_STEP_MAX && step >= -ENC_STEP_MAX)
+    {
+        /* 合法样：解缠 + 滑动窗口测速 + 更新基准 + 发布 */
+        if (wrap == -1)      _full_turns -= _2PI;
+        else if (wrap == +1) _full_turns += _2PI;
+
+        float dt_real = (float)(now_cyc - _last_real_cyc) / FOC_HCLK_HZ;
+        if (dt_real > 1e-5f && dt_real < 0.05f)
+        {
+            _spd_acc     += step;                 /* 累计归一化单步差，静止时 ±1LSB 抵消 */
+            _spd_acc_cyc += (now_cyc - _last_real_cyc);
+            if (++_spd_samples >= SPD_EST_WINDOW)
+            {
+                float dtime = (float)_spd_acc_cyc / FOC_HCLK_HZ;
+                if (dtime > 1e-4f && dtime < 0.5f)
+                {
+                    float inst = _spd_acc / dtime;
+                    if (inst > -SPD_VALID_MAX && inst < SPD_VALID_MAX)
+                        _mech_speed = _mech_speed * 0.85f + inst * 0.15f;
+                }
+                _spd_acc = 0.0f; _spd_acc_cyc = 0; _spd_samples = 0;
+            }
+        }
+        _prev_raw_val  = raw;
+        _real_angle    = _full_turns + a;
+        _last_real_cyc = now_cyc;
+        _publish(_real_angle, now_cyc);
+    }
+    else
+    {
+        _suspect_cnt++;   /* 疑似 I2C 脏读：完全不更新状态，丢这一拍 */
+    }
+
+    /* 背靠背重启：先消费 _dma_buf 再重启，单缓冲安全（重启 ~120µs 后才再写缓冲） */
+    if (HAL_I2C_Mem_Read_DMA(&hi2c2, 0x36 << 1, 0x0C, 1, _dma_buf, 2) != HAL_OK)
+    {
+        _err_cnt++;
+        _need_recovery = 1;   /* 不在回调内循环重试，交线程态 encoder_try_recovery */
+    }
+}
 
 /*
- * I2C Mem Read DMA 完成回调（STM32G4 HAL 弱符号，此处覆盖）
- * DMA 接收完成后 HAL 框架触发此回调，在此清除 busy 标志。
- * _get_angle() 在下一次 ISR 调用时检测 busy→idle 转换并处理数据。
+ * I2C Mem Read DMA 完成回调（覆盖 HAL 弱符号），运行于 DMA1_Channel1 ISR (prio 1)。
  */
 void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
-    if (hi2c == &hi2c2)
-        _busy = 0;
+    if (hi2c == &hi2c2 && _ready && !g_openloop)
+        _on_i2c_done();
+}
+
+/* I2C 错误回调（覆盖 HAL 弱符号）：NAK 类瞬时错误尝试直接重启自愈，否则交线程态 */
+void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
+{
+    if (hi2c != &hi2c2) return;
+    _err_cnt++;
+    if (_ready && !g_openloop)
+    {
+        if (HAL_I2C_Mem_Read_DMA(&hi2c2, 0x36 << 1, 0x0C, 1, _dma_buf, 2) != HAL_OK)
+            _need_recovery = 1;
+    }
+    else
+    {
+        _need_recovery = 1;
+    }
+}
+
+/*
+ * 线程态恢复（foc_main_loop 调用）。电流环 ISR 只置标志、不阻塞；真正可能耗时
+ * ~10ms 的阻塞读放这里。线程态可被发布端(prio1)抢占，故状态更新段用临界区。
+ */
+void encoder_try_recovery(void)
+{
+    if (!_need_recovery) return;
+
+    /* 已自愈？(发布端又出了新角度) */
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    uint32_t t0 = _pub_last_cyc;
+    __set_PRIMASK(pm);
+    if ((float)(DWT->CYCCNT - t0) / FOC_HCLK_HZ < ENC_WDG_S)
+    {
+        _need_recovery = 0;
+        return;
+    }
+
+    /* 真卡死：阻塞恢复（局部 buf，不碰发布端私有 _dma_buf） */
+    HAL_I2C_Abort(&hi2c2);
+    uint8_t buf[2];
+    if (HAL_I2C_Mem_Read(&hi2c2, 0x36 << 1, 0x0C, I2C_MEMADD_SIZE_8BIT, buf, 2, 10) == HAL_OK)
+    {
+        int32_t raw = (int32_t)((((uint16_t)buf[0]) << 8) | (uint16_t)buf[1]) & 0x0FFF;
+        float a = (float)raw * RAD_PER_COUNT;
+        uint32_t now = DWT->CYCCNT;
+        pm = __get_PRIMASK();
+        __disable_irq();
+        /* 让 _real_angle 连续：选 _full_turns 使 (_full_turns+a) 最接近当前 _real_angle */
+        _full_turns   = roundf((_real_angle - a) / _2PI) * _2PI;
+        _prev_raw_val = raw;
+        _real_angle   = _full_turns + a;
+        _last_real_cyc = now;
+        _publish(_real_angle, now);   /* 嵌套临界区安全（PRIMASK 已禁） */
+        __set_PRIMASK(pm);
+    }
+    /* 无论读成功与否都重启 DMA，让发布端恢复后台刷新 */
+    if (HAL_I2C_Mem_Read_DMA(&hi2c2, 0x36 << 1, 0x0C, 1, _dma_buf, 2) != HAL_OK)
+        _err_cnt++;
+    _need_recovery = 0;
 }
 
 static void _init(void)
 {
-    _prev_raw_val    = 0;
-    _full_turns      = 0.0f;
-    _cached_angle    = 0.0f;
-    _mech_speed      = 0.0f;
-    _prev_real_angle = 0.0f;
-    _real_cnt        = 0;
-    _isr_cnt         = 0;
-    _busy            = 0;
-    _busy_cnt        = 0;
-    _ready           = 0;
-    _last_real_cyc   = 0;
-    _call_cyc        = 0;
-    _spd_acc         = 0.0f;
-    _spd_acc_cyc     = 0;
-    _spd_samples     = 0;
+    _prev_raw_val  = 0;
+    _full_turns    = 0.0f;
+    _real_angle    = 0.0f;
+    _last_real_cyc = 0;
+    _mech_speed    = 0.0f;
+    _spd_acc       = 0.0f;
+    _spd_acc_cyc   = 0;
+    _spd_samples   = 0;
+    _pub_angle     = 0.0f;
+    _pub_speed     = 0.0f;
+    _pub_last_cyc  = 0;
+    _need_recovery = 0;
+    _pub_seq = _to_cnt = _suspect_cnt = _err_cnt = 0;
+    _ready         = 0;
 }
 
 static float _get_angle(void)
@@ -86,99 +228,54 @@ static float _get_angle(void)
         syn += 0.002f;  /* ~12.5kHz * 0.002 ≈ 25 rad/s el */
         if (syn > 6.283185f) syn -= 6.283185f;
         _mech_speed = 0.05f * 12500.0f / 14.0f;  /* 等效机械速度 */
-        _cached_angle = syn;
-        _ready = 1;
+        g_dbg_mech  = syn;
         return syn * AS5600_DIR_SIGN;
     }
 
     if (!_ready)
     {
-        /* 首次阻塞读，获取初始角度 */
+        /* 线程态首次：阻塞读建基准（此时无 DMA 在途，发布端不会触发） */
         uint8_t buf[2];
         HAL_I2C_Mem_Read(&hi2c2, 0x36 << 1, 0x0C, I2C_MEMADD_SIZE_8BIT, buf, 2, 10);
-        int32_t raw = (int32_t)(((uint16_t)buf[0] << 8) | (uint16_t)buf[1]);
-        _prev_raw_val    = raw;
-        _cached_angle    = (float)raw / AS5600_RESOLUTION * _2PI;
-        _prev_real_angle = _cached_angle;
-        _ready           = 1;
-
-        /* 立即启动后台 DMA */
+        int32_t raw = (int32_t)((((uint16_t)buf[0]) << 8) | (uint16_t)buf[1]) & 0x0FFF;
+        float a = (float)raw * RAD_PER_COUNT;
+        uint32_t now = DWT->CYCCNT;
+        _full_turns    = 0.0f;
+        _prev_raw_val  = raw;
+        _real_angle    = a;
+        _last_real_cyc = now;
+        _mech_speed    = 0.0f;
+        _publish(a, now);
+        _ready = 1;
         HAL_I2C_Mem_Read_DMA(&hi2c2, 0x36 << 1, 0x0C, 1, _dma_buf, 2);
-        _busy = 1;
-
-        /* 建立 DWT 时基基准（DWT 已在 foc_main_init 中使能） */
-        _last_real_cyc = DWT->CYCCNT;
-        _call_cyc      = _last_real_cyc;
-        return _cached_angle;
+        g_dbg_mech = a;
+        return a * AS5600_DIR_SIGN;
     }
 
-    _isr_cnt++;
+    /* 临界区拷贝快照 */
+    float a0, spd;
+    uint32_t t0;
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    a0  = _pub_angle;
+    spd = _pub_speed;
+    t0  = _pub_last_cyc;
+    __set_PRIMASK(pm);
 
-    /* 用 DWT 周期计数测量真实调用间隔，不再假设固定调用频率 */
-    uint32_t now_cyc  = DWT->CYCCNT;
-    float    dt_call  = (float)(now_cyc - _call_cyc) / FOC_HCLK_HZ;  /* 距上次调用秒数 */
-    _call_cyc = now_cyc;
-
-    /* 检查 DMA 是否刚刚完成（busy→idle 转换） */
-    if (!_busy)
+    uint32_t now_cyc = DWT->CYCCNT;
+    float dt = (float)(now_cyc - t0) / FOC_HCLK_HZ;   /* 无符号差，CYCCNT ~25s 回绕安全 */
+    if (dt > ENC_WDG_S)
     {
-        /* 新数据就绪：处理 raw → angle → 跨圈 → 速度 */
-        int32_t raw = (int32_t)(((uint16_t)_dma_buf[0] << 8) | (uint16_t)_dma_buf[1]);
-
-        float a = (float)raw / AS5600_RESOLUTION * _2PI;
-        float da = a - (float)_prev_raw_val / AS5600_RESOLUTION * _2PI;
-        if (da > 3.14159f)       _full_turns -= _2PI;
-        else if (da < -3.14159f) _full_turns += _2PI;
-
-        _prev_raw_val = raw;
-        _cached_angle = _full_turns + a;
-
-        /* 速度估计：滑动窗口累计"干净解缠机械角"差(行127已将 _cached_angle 重设为 _full_turns+a，不含外推噪声)
-         * 窗口内 1-LSB 翻转正负抵消→静止速度≈0，从根本上消除量化噪声引起的 target_iq 抖动(狂抖) */
-        float dt_real = (float)(now_cyc - _last_real_cyc) / FOC_HCLK_HZ;
-        if (dt_real > 1e-5f && dt_real < 0.1f)
-        {
-            _spd_acc     += (_cached_angle - _prev_real_angle);
-            _spd_acc_cyc += (now_cyc - _last_real_cyc);
-            _spd_samples++;
-            if (_spd_samples >= SPD_EST_WINDOW)
-            {
-                float dtime = (float)_spd_acc_cyc / FOC_HCLK_HZ;
-                if (dtime > 1e-4f && dtime < 0.5f)
-                {
-                    float inst = _spd_acc / dtime;
-                    if (inst > -5000.0f && inst < 5000.0f)
-                        _mech_speed = _mech_speed * 0.85f + inst * 0.15f;
-                }
-                _spd_acc = 0.0f; _spd_acc_cyc = 0; _spd_samples = 0;
-            }
-        }
-        _prev_real_angle = _cached_angle;
-        _last_real_cyc   = now_cyc;
-        _real_cnt        = _isr_cnt;
-
-        /* 立即启动下一次 DMA */
-        HAL_I2C_Mem_Read_DMA(&hi2c2, 0x36 << 1, 0x0C, 1, _dma_buf, 2);
-        _busy = 1;
-        _busy_cnt = 0;
+        /* 太久无新角度：标记线程态恢复，钳住外推时长 + 速度衰减，防飞车 */
+        if (!_need_recovery) { _need_recovery = 1; _to_cnt++; }
+        dt = ENC_WDG_S;
+        spd *= 0.9f;
     }
-    else
-    {
-        /* DMA 还在忙，用上一次的速度做外推（按真实调用间隔积分） */
-        _cached_angle += _mech_speed * dt_call;
-        _busy_cnt++;
+    if (dt < 0.0f) dt = 0.0f;
+    float predicted = a0 + spd * dt;
 
-        /* 超过 50 次 ISR (5ms) 未完成 → DMA 卡死，阻塞恢复 */
-        if (_busy_cnt > 50)
-        {
-            HAL_I2C_Mem_Read(&hi2c2, 0x36 << 1, 0x0C, I2C_MEMADD_SIZE_8BIT, _dma_buf, 2, 10);
-            _busy = 0;   /* 触发下次 ISR 处理 */
-            _busy_cnt = 0;
-        }
-    }
-
-    g_dbg_mech = _cached_angle;
-    return _cached_angle * AS5600_DIR_SIGN;
+    g_dbg_mech = predicted;
+    return predicted * AS5600_DIR_SIGN;
 }
 
 static float _get_speed(void) { return _mech_speed * AS5600_DIR_SIGN; }

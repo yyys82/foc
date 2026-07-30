@@ -17,6 +17,7 @@ extern const hal_uart_t    g_hal_uart;
 extern const hal_can_t     g_hal_can;
 extern uint8_t g_openloop;
 extern float   g_dbg_mech;
+extern void    encoder_try_recovery(void);   /* hal_stm32g4_encoder.c：线程态 I2C 卡死恢复 */
 
 foc_core_t  g_core;
 foc_comm_t  g_comm;
@@ -25,7 +26,7 @@ foc_can_t   g_can;
 static const foc_motor_params_t g_motor = {
     .rs = 0.12f, .ld = 0.35e-3f, .lq = 0.35e-3f,
     .flux_linkage = 0.0072f, .pole_pairs = 14,
-    .rated_current = 15.0f, .max_speed = 300.0f,
+    .rated_current = 2.0f, .max_speed = 300.0f,   /* 过流故障阈值 = rated*1.5 = 3.0A（贴 ADC 饱和上沿）；Rs=10mΩ+INA240A2(50V/V)=0.5V/A，ADC 约 ±3.0~3.3A 饱和 */
 };
 
 /* ===== 调试开关 ===== */
@@ -111,6 +112,11 @@ void foc_main_init(void)
     DWT->CTRL |= 1;
     DWT->CYCCNT = 0;
 
+    /* 编码器 I2C DMA 完成回调(DMA1_Channel1)是角度发布端，提到优先级 1：
+     * 让电流环 ADC ISR(prio0) 能抢占它，发布端(~µs 级)不再整体顺延电流环 → 抖动归零。
+     * (dma.c 里 MX_DMA_Init 默认设 0；此处覆盖，放 init 最前以早于对齐阶段首次启动 DMA) */
+    HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 1, 0);
+
     g_openloop = 0;  /* 编码器模式，对齐修复后 */
 
     /* HAL 初始化 */
@@ -131,10 +137,6 @@ void foc_main_init(void)
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_SET);
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_SET);
     g_hal_pwm.enable(1);
-
-    /* 禁用 ADC DMA 中断 */
-    HAL_NVIC_DisableIRQ(DMA1_Channel2_IRQn);
-    HAL_NVIC_DisableIRQ(DMA1_Channel3_IRQn);
 
     /* 对齐 (ADC/I2C 中断均未开，确保编码器阻塞读不受干扰) */
     _do_alignment();
@@ -209,6 +211,7 @@ void foc_main_loop(void)
 //        printf("%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\r\n", pos, tpos, spd, tspd, iq, tiq, id, vq);
 //    }
 
+    encoder_try_recovery();   /* 线程态处理编码器 I2C 卡死恢复（电流环 ISR 只置标志，不阻塞） */
     comm_tick(&g_comm);
     __WFI();
 }

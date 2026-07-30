@@ -70,7 +70,9 @@ void MX_ADC1_Init(void)
 
   /** Configure the ADC multi-mode
   */
-  multimode.Mode = ADC_MODE_INDEPENDENT;
+  multimode.Mode = ADC_DUALMODE_INJECSIMULT;        /* ADC1(主)+ADC2(从) 注入同步：硬件保证两相同刻采样 */
+  multimode.DMAAccessMode = ADC_DMAACCESSMODE_DISABLED;  /* 注入组读 JDR，不走 DMA/CDR */
+  multimode.TwoSamplingDelay = 0;                    /* 本模式下被忽略，显式给值 */
   if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
   {
     Error_Handler();

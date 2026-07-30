@@ -1,5 +1,5 @@
 /*
- * STM32G4 TIM3 三相 PWM (50kHz)
+ * STM32G4 TIM3 三相 PWM (25kHz, 中心对齐 ARR=3399)
  * CH1=PA6(U)  CH2=PA4(V)  CH3=PB0(W)
  */
 #include "hal/hal_pwm.h"
@@ -11,6 +11,9 @@ static uint8_t _enabled;
 
 static void _set_duty(float ta, float tb, float tc)
 {
+    /* 相序映射（与 ADC 采样一致，勿改）：
+     *   ta→CH1(PA6)  tb→CH3(PB0)  tc→CH2(PA4)
+     *   ADC: PA3(IN4)采 PA4 分流→ib，PB11(IN14)采 PB0 分流→ic，ia=-(ib+ic) */
     __HAL_TIM_SetCompare(&htim3, TIM_CHANNEL_1, (uint16_t)(ta * TIM_PERIOD));
     __HAL_TIM_SetCompare(&htim3, TIM_CHANNEL_3, (uint16_t)(tb * TIM_PERIOD));
     __HAL_TIM_SetCompare(&htim3, TIM_CHANNEL_2, (uint16_t)(tc * TIM_PERIOD));
