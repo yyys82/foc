@@ -7,10 +7,6 @@
 #include "hal/hal_current.h"
 #include "adc.h"
 
-volatile uint32_t g_adc1_jdr;
-volatile uint32_t g_adc2_jdr;
-volatile uint8_t  g_adc_fresh;
-
 static void _init(void)
 {
     /* ADC 自校准：须在 ADC 使能前执行（HAL 内部会先关 ADC）。
@@ -24,7 +20,10 @@ static void _init(void)
     HAL_ADCEx_InjectedStart(&hadc1);
     HAL_ADCEx_InjectedStart(&hadc2);
 
-    ADC1->IER |= ADC_IER_JEOCIE;
+    /* 只开 ADC2 的注入完成中断。ADC1/ADC2 由同一 TRGO 同步触发、采样时间相同，
+     * ADC2 的 JEOC 到来时 ADC1 必然也已完成 → 每个 PWM 周期恰好进一次
+     * ADC1_2_IRQHandler，在 ISR 里一次性读两个 JDR1。避免了两个 JEOC 先后置位
+     * 导致共享中断双入口、需要 &1 分频的脆弱时序。电流环触发率 = PWM 频率。 */
     ADC2->IER |= ADC_IER_JEOCIE;
 }
 

@@ -21,7 +21,6 @@ extern float   g_dbg_mech;
 foc_core_t  g_core;
 foc_comm_t  g_comm;
 foc_can_t   g_can;
-volatile uint32_t g_tim6_count;
 
 static const foc_motor_params_t g_motor = {
     .rs = 0.12f, .ld = 0.35e-3f, .lq = 0.35e-3f,

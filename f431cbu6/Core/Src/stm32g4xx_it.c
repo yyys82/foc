@@ -52,10 +52,6 @@ extern DMA_HandleTypeDef hdma_i2c2_rx;
 extern TIM_HandleTypeDef htim6;
 /* USER CODE BEGIN EV */
 extern I2C_HandleTypeDef hi2c2;
-extern volatile uint32_t g_adc1_jdr;
-extern volatile uint32_t g_adc2_jdr;
-extern volatile uint8_t  g_adc_fresh;
-extern volatile uint32_t g_tim6_count;
 extern foc_core_t g_core;
 /* USER CODE END EV */
 
@@ -254,17 +250,14 @@ void TIM6_DAC_IRQHandler(void)
 
 /* USER CODE BEGIN 1 */
 
-/* ADC1/2 注入完成中断: 读 JDR1, 跑电流环 (25kHz, 每个 TRGO) */
+/* ADC1/2 注入完成中断：仅由 ADC2 的 JEOC 触发，每 PWM 周期一次。
+ * ADC1/ADC2 由 TIM3 TRGO 同步采样，此刻两者 JDR1 均已就绪，直接跑电流环
+ * （25kHz = PWM 频率，匹配 FOC_DT_CURRENT=40us）。相电流由
+ * foc_sense_current_sample()→_read() 现场读 JDR1 取得，无需在此缓存。 */
 void ADC1_2_IRQHandler(void)
 {
-    g_adc1_jdr = ADC1->JDR1 & 0xFFFF;
-    g_adc2_jdr = ADC2->JDR1 & 0xFFFF;
-    g_adc_fresh = 1;
     ADC1->ISR = ADC_ISR_JEOC | ADC_ISR_JEOS;
     ADC2->ISR = ADC_ISR_JEOC | ADC_ISR_JEOS;
-
-    g_tim6_count++;
-    if (g_tim6_count & 1) return;   /* ADC 触发50kHz，分频→电流环25kHz，匹配 FOC_DT_CURRENT=40us */
 
     foc_core_loop_current(&g_core);
 }
