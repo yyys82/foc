@@ -29,3 +29,12 @@ JLinkSettings.ini
 # 编译器临时文件
 __prep*
 __main_*
+
+# AI 辅助工具工作目录
+.workbuddy/
+.claude/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo

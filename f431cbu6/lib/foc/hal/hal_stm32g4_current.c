@@ -13,6 +13,12 @@ volatile uint8_t  g_adc_fresh;
 
 static void _init(void)
 {
+    /* ADC 自校准：须在 ADC 使能前执行（HAL 内部会先关 ADC）。
+     * G4 上电默认校准因子未加载，不校准会引入额外失调/增益误差，
+     * 对靠减 1.65V 零点测双向小电流的方案影响最明显。 */
+    HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
+    HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED);
+
     HAL_ADC_Start(&hadc1);
     HAL_ADC_Start(&hadc2);
     HAL_ADCEx_InjectedStart(&hadc1);
