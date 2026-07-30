@@ -74,8 +74,9 @@ void foc_sense_encoder_init(foc_encoder_ctx_t *ctx, float pole_pairs)
 
 static float _wrap(float a)
 {
-    while (a >  FOC_PI) a -= FOC_2PI;
-    while (a < -FOC_PI) a += FOC_2PI;
+    /* O(1) 归一化到 (-π, π]：get_angle 返回无界多圈角，×极对数后幅度随圈数线性增长，
+     * 若用 while 迭代减 2π 会变成 O(圈数)，持续旋转几十圈后拖垮 25kHz 电流环 ISR。 */
+    a -= roundf(a / FOC_2PI) * FOC_2PI;
     return a;
 }
 

@@ -250,8 +250,9 @@ void TIM6_DAC_IRQHandler(void)
 
 /* USER CODE BEGIN 1 */
 
-/* ADC1/2 注入完成中断：仅由 ADC2 的 JEOC 触发，每 PWM 周期一次。
- * ADC1/ADC2 由 TIM3 TRGO 同步采样，此刻两者 JDR1 均已就绪，直接跑电流环
+/* ADC1/2 注入完成中断：双注入同步 (INJECSIMULT) 下仅由主机 ADC1 的 JEOC 触发，
+ * 每 PWM 周期一次（从机 ADC2 跟随主机同刻完成，其中断保持关闭，勿开启否则倍频）。
+ * 此刻 ADC1/ADC2 两者 JDR1 均已就绪，直接跑电流环
  * （25kHz = PWM 频率，匹配 FOC_DT_CURRENT=40us）。相电流由
  * foc_sense_current_sample()→_read() 现场读 JDR1 取得，无需在此缓存。 */
 void ADC1_2_IRQHandler(void)

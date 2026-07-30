@@ -1,8 +1,8 @@
 /*
- * STM32G4 INA240 双电阻电流 — 注入 TRGO 硬件触发 + 中断读取
- *   TIM3 OC4REF → TRGO → ADC1/2 Injected → JEOC中断
- *   中断里直接读 JDR1，电流环就在本中断内执行（25kHz，每2次ADC触发）
- *   INA240: gain=50V/V, Rs=0.01Ω, Vref=1.65V
+ * STM32G4 INA240 双电阻电流 — 双 ADC 注入同步 + 中断读取
+ *   TIM3 OC4REF → TRGO → ADC1(主)/ADC2(从) 注入同步转换 (INJECSIMULT) → 主机 JEOC 中断
+ *   每 PWM 周期单入口，中断里直接读两个 JDR1，电流环就在本中断内执行（25kHz = PWM 频率）
+ *   INA240A2: gain=50V/V, Rs=0.01Ω, Vref=1.65V → 0.5V/A，满量程约 ±3.0~3.3A
  */
 #include "hal/hal_current.h"
 #include "adc.h"

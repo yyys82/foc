@@ -1,5 +1,5 @@
 /* STM32G431 FOC — 应用层
- * TIM3  -> PWM (50kHz)
+ * TIM3  -> PWM (25kHz, 中心对齐 ARR=3399)
  * TIM6  -> 速度环/位置环 ISR (1kHz / 200Hz)；电流环在 ADC 注入中断 (25kHz)
  * USART1 -> printf + 上位机
  * FDCAN1 -> CAN 控制
@@ -79,7 +79,7 @@ static void _do_calibration(void)
            g_core.sense.current.offset.w);
 }
 
-/* ISR: 10kHz 电流环, 分频执行速速/位置环 */
+/* TIM6 ISR: 速度环 1kHz / 位置环 200Hz（电流环在 ADC 注入中断，25kHz） */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance != TIM6) return;

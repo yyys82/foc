@@ -178,8 +178,14 @@ void encoder_try_recovery(void)
         return;
     }
 
-    /* 真卡死：阻塞恢复（局部 buf，不碰发布端私有 _dma_buf） */
-    HAL_I2C_Abort(&hi2c2);
+    /* 真卡死：阻塞恢复（局部 buf，不碰发布端私有 _dma_buf）。
+     * 本 STM32G4 HAL 版本无阻塞式 HAL_I2C_Abort：用 DeInit+Init 完整复位 I2C
+     * 外设与句柄（HAL_I2C_MspInit 会重新初始化并链接 DMA，Init 结构体里的
+     * Timing 等参数会被重新套用）。随后清 DMA1_Channel1 挂起，避免恢复期间
+     * 一个已锁存的 TC 误触发发布端去读陈旧 _dma_buf。 */
+    HAL_I2C_DeInit(&hi2c2);
+    HAL_I2C_Init(&hi2c2);
+    HAL_NVIC_ClearPendingIRQ(DMA1_Channel1_IRQn);
     uint8_t buf[2];
     if (HAL_I2C_Mem_Read(&hi2c2, 0x36 << 1, 0x0C, I2C_MEMADD_SIZE_8BIT, buf, 2, 10) == HAL_OK)
     {
