@@ -163,9 +163,12 @@ void foc_main_init(void)
     foc_control_reset_all(&g_core.ctrl);
 
     /* PID */
-    foc_control_set_pid(&g_core.ctrl, FOC_CTRL_SPD, 0.18f, 0.15f, 0.0f);  /* 速度环：低增益匹配AS5600低速分辨率 */
-    foc_control_set_pid(&g_core.ctrl, FOC_CTRL_IQ,  0.24f, 5.9f, 0.0f);  /* 电流环 */
-    foc_control_set_pid(&g_core.ctrl, FOC_CTRL_POS, 8.0f, 0.00f, 0.0f);  /* 位置环：纯P，低增益防保持振荡 */
+    foc_control_set_pid(&g_core.ctrl, FOC_CTRL_SPD, 0.03f, 0.02f, 0.0f);  /* 速度环：长测速窗(256)平滑反馈；低增益防低速测速噪声驱动振荡 */
+    /* 电流环：L=0.35mH, R=0.12Ω, ωc=1000 → kp=0.35, ki=120。
+     * 实测 0.35/120 跟踪最佳(0.2A→iq 0.20)；0.6/200 失稳跟踪变差。 */
+    foc_control_set_pid(&g_core.ctrl, FOC_CTRL_ID,  0.35f, 120.0f, 0.0f);
+    foc_control_set_pid(&g_core.ctrl, FOC_CTRL_IQ,  0.35f, 120.0f, 0.0f);
+    foc_control_set_pid(&g_core.ctrl, FOC_CTRL_POS, 1.0f, 0.00f, 0.0f);  /* 位置环：纯P，低增益防保持振荡 */
 
     /* 复位后默认安全静止：IDLE + 断电，等待上位机 enable / mode / target 命令
      * 不调用 foc_core_enable → core->enable=0，电流环每个中断都会 set_duty(0,0,0) 清零，

@@ -274,6 +274,56 @@ static void _cmd_reset(foc_comm_t *comm)
     System_Reset();
 }
 
+/* 调试：dump ADC/TIM3 关键寄存器 + 编码器发布端内部状态 */
+extern void encoder_get_debug(uint32_t *pub_seq, uint32_t *suspect, int *spd_samples,
+                              float *mech_speed, float *real_angle, uint32_t *last_real_cyc);
+static void _cmd_dbg(foc_comm_t *comm)
+{
+    if (!comm->core) return;
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+        "loop=%lu t=%.4f\r\n"
+        "ADC1 ISR=%08lX IER=%08lX CR=%08lX\r\n"
+        "ADC2 ISR=%08lX IER=%08lX CR=%08lX\r\n"
+        "CCR=%08lX TIM3_CR1=%08lX CEN=%d\r\n",
+        (unsigned long)comm->core->loop_count,
+        comm->core->loop_count * FOC_DT_CURRENT,
+        (unsigned long)ADC1->ISR, (unsigned long)ADC1->IER, (unsigned long)ADC1->CR,
+        (unsigned long)ADC2->ISR, (unsigned long)ADC2->IER, (unsigned long)ADC2->CR,
+        (unsigned long)ADC12_COMMON->CCR, (unsigned long)TIM3->CR1,
+        (int)((TIM3->CR1 & TIM_CR1_CEN) ? 1 : 0));
+
+    uint32_t pub_seq, suspect, last_cyc;
+    int spd_samples;
+    float mech_speed, real_angle;
+    encoder_get_debug(&pub_seq, &suspect, &spd_samples, &mech_speed, &real_angle, &last_cyc);
+    snprintf(buf, sizeof(buf),
+        "ENC pub_seq=%lu suspect=%lu spd_samples=%d mech_spd=%.4f real_ang=%.4f last_cyc=%lu dwt=%lu\r\n",
+        (unsigned long)pub_seq, (unsigned long)suspect, spd_samples,
+        (double)mech_speed, (double)real_angle, (unsigned long)last_cyc,
+        (unsigned long)DWT->CYCCNT);
+    _send_str(comm, buf);
+}
+
+/* 在线微调编码器电气角偏移：elec = mech*pp - offset_rad。
+ * 用于台架扫帧：找到 id→0、iq→目标的 offset 后固化进对齐逻辑。 */
+static void _cmd_offcorr(foc_comm_t *comm, char *args[], int n)
+{
+    if (!comm->core) return;
+    if (n < 1)
+    {
+        _send_str(comm, "ERR: offcorr <rad> (累加到 offset_rad)\n");
+        return;
+    }
+    float corr = _parse_float(args[0]);
+    comm->core->sense.encoder.offset_rad += corr;
+    char buf[80];
+    snprintf(buf, sizeof(buf), "OK: offset_rad=%.4f (%.1f deg)\n",
+             comm->core->sense.encoder.offset_rad,
+             comm->core->sense.encoder.offset_rad * 57.2958f);
+    _send_str(comm, buf);
+}
+
 static void _cmd_help(foc_comm_t *comm)
 {
     _send_str(comm,
@@ -288,6 +338,8 @@ static void _cmd_help(foc_comm_t *comm)
         "  calib                      calibrate current offset\n"
         "  stop                       emergency stop\n"
         "  reset                      soft reset MCU (FAULTMASK + NVIC_SystemReset)\n"
+        "  dbg                        dump ADC1/2 ISR/IER/CR, CCR, TIM3 CR1\n"
+        "  offcorr <rad>              nudge encoder offset_rad (frame sweep)\n"
         "  help                       show this message\n"
     );
 }
@@ -316,6 +368,8 @@ void comm_process_line(foc_comm_t *comm)
     else if (strcmp(args[0], "encoder") == 0) _cmd_encoder(comm);
     else if (strcmp(args[0], "stop") == 0)   _cmd_stop(comm);
     else if (strcmp(args[0], "reset") == 0)  _cmd_reset(comm);
+    else if (strcmp(args[0], "dbg") == 0)    _cmd_dbg(comm);
+    else if (strcmp(args[0], "offcorr") == 0) _cmd_offcorr(comm, args + 1, n - 1);
     else if (strcmp(args[0], "help") == 0)   _cmd_help(comm);
     else
     {
@@ -342,6 +396,24 @@ static void _output_monitor(foc_comm_t *comm)
         else if (strcmp(name, "iq") == 0)  val = foc_core_get_iq(comm->core);
         else if (strcmp(name, "id") == 0)  val = foc_core_get_id(comm->core);
         else if (strcmp(name, "vbus") == 0)val = foc_core_get_vbus(comm->core);
+        /* 诊断：目标速度/目标电流（看位置环/速度环命令值，定位哪一环反了或不执行） */
+        else if (strcmp(name, "tspd") == 0) val = comm->core->ctrl.target_spd;
+        else if (strcmp(name, "tiq") == 0)  val = comm->core->ctrl.target_iq;
+        /* 诊断：原始三相相电流（已减 offset，单位 A），验证驱动时 ADC 是否真采到电流 */
+        else if (strcmp(name, "ia") == 0)  val = comm->core->sense.current.raw.a;
+        else if (strcmp(name, "ib") == 0)  val = comm->core->sense.current.raw.b;
+        else if (strcmp(name, "ic") == 0)  val = comm->core->sense.current.raw.c;
+        /* 诊断：原始编码器机械角 / 机械速度（绕过 foc_sense，看 HAL 层原始输出） */
+        else if (strcmp(name, "mag") == 0)
+        {
+            if (comm->core->encoder_hal && comm->core->encoder_hal->get_angle)
+                val = comm->core->encoder_hal->get_angle();
+        }
+        else if (strcmp(name, "mspd") == 0)
+        {
+            if (comm->core->encoder_hal && comm->core->encoder_hal->get_speed)
+                val = comm->core->encoder_hal->get_speed();
+        }
 
         int n = snprintf(p, rem, "%s=%.4f ", name, val);
         p += n; rem -= n;

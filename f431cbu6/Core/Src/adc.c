@@ -70,9 +70,10 @@ void MX_ADC1_Init(void)
 
   /** Configure the ADC multi-mode
   */
-  multimode.Mode = ADC_DUALMODE_INJECSIMULT;        /* ADC1(主)+ADC2(从) 注入同步：硬件保证两相同刻采样 */
-  multimode.DMAAccessMode = ADC_DMAACCESSMODE_DISABLED;  /* 注入组读 JDR，不走 DMA/CDR */
-  multimode.TwoSamplingDelay = 0;                    /* 本模式下被忽略，显式给值 */
+  multimode.Mode = ADC_MODE_INDEPENDENT;            /* 独立模式：两 ADC 各自 T3_TRGO 触发注入。
+    双注入同步(INJECSIMULT)实测从机 ADC2 运行中不转换(ic 恒定 sd≈0)，改回独立让从机自行转换。 */
+  multimode.DMAAccessMode = ADC_DMAACCESSMODE_DISABLED;
+  multimode.TwoSamplingDelay = 0;
   if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
   {
     Error_Handler();

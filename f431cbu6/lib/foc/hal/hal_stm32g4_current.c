@@ -15,17 +15,15 @@ static void _init(void)
     HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
     HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED);
 
-    /* 双 ADC 注入同步 (ADC_DUALMODE_INJECSIMULT)：
-     * 启动顺序先从机(ADC2)后主机(ADC1)。从机在同步模式下只使能、不启动，
-     * 跟随主机；主机 InjectedStart 把 JADSTART arm 到下一个 T3_TRGO 触发。
-     * 规则组不用（vbus 为常量），故不再 HAL_ADC_Start。 */
-    HAL_ADCEx_InjectedStart(&hadc2);   /* 从机：使能，跟随主机 */
-    HAL_ADCEx_InjectedStart(&hadc1);   /* 主机：arm 注入转换 */
+    /* 独立模式：两 ADC 各自 T3_TRGO 触发注入，启动顺序无关。
+     * (双注入同步 INJECSIMULT 下从机 ADC2 运行中不转换 → ic 恒定，已改回独立模式。) */
+    HAL_ADCEx_InjectedStart(&hadc1);
+    HAL_ADCEx_InjectedStart(&hadc2);
 
-    /* 只开主机(ADC1)的注入完成中断：同步模式下两机同时完成，主机 JEOC 到来时
-     * 从机 JDR1 必然已就绪，ISR 里一次读两个 JDR1。从机 JEOCIE 保持关闭 →
-     * 每个 PWM 周期单入口（切勿再开 ADC2 JEOCIE 或 JEOSIE，否则双入口倍频）。 */
-    ADC2->IER &= ~ADC_IER_JEOCIE;      /* 显式保险 */
+    /* 只开主机(ADC1) JEOC 中断：两机同一 TRGO 触发、同刻完成，
+     * 主机 JEOC 到来时从机 JDR 也已就绪，ISR 一次读两个 JDR1。
+     * 从机 JEOCIE 保持关闭 → 每 PWM 周期单入口（勿再开 ADC2 JEOCIE/JEOSIE）。 */
+    ADC2->IER &= ~ADC_IER_JEOCIE;
     ADC1->IER |= ADC_IER_JEOCIE;
 }
 

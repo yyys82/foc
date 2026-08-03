@@ -30,6 +30,8 @@ typedef struct {
 
     float vd, vq;
 
+    float spd_fb_filt;   /* 速度反馈低通状态（AS5600 低速测速噪声抑制） */
+
     float dt_current;
     float dt_speed;
     float dt_position;

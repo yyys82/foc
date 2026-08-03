@@ -50,6 +50,12 @@ void foc_core_enable(foc_core_t *core)
      * 无需再对齐。直接进 RUN, 否则状态机卡在 ALIGN 而电流环
      * (if state!=RUN return) 永远零 PWM —— 表现为 enable/mode/target 都设了电机却不转。 */
     core->state  = FOC_STATE_RUN;
+    /* 必须重启 PWM/TIM3：foc_core_disable 里 enable(0) 会经 HAL_TIM_PWM_Stop 停掉
+     * TIM3 计数器(CEN=0) → TRGO 停 → ADC 注入停 → 电流环收不到触发。
+     * 若不在此复启，一次 disable 后再 enable 电机就永远不转了。
+     * (hal_pwm._enable 有 _enabled 防重入，首次/重复调用安全) */
+    if (core->pwm_hal && core->pwm_hal->enable)
+        core->pwm_hal->enable(1);
 }
 
 void foc_core_disable(foc_core_t *core)
@@ -154,7 +160,13 @@ extern float g_dbg_mech;   /* hal_stm32g4_encoder.c: 多圈机械角(rad) */
 void foc_core_loop_position(foc_core_t *core)
 {
     /* 位置环用多圈机械角，不用电角度（电角度 wrap 会跳变，一圈内14个周期无法区分位置） */
-    /* 输出 × pole_pairs → 电角速度，匹配速度环反馈单位 */
     foc_control_position_loop(&core->ctrl, g_dbg_mech);
-    core->ctrl.target_spd *= core->sense.encoder.pole_pairs;
+    /* 修正：foc_control_position_loop 内部把输出限幅到 ±speed_limit(电速度 300)，
+       但位置环输出实为机械速度，若直接 ×pp 会变 ±4200 电速度(14×上限) → 电机全速追位置、一直转。
+       这里先按机械限幅(speed_limit/pp)夹紧，再 ×pp 转成电速度(≤300)给速度环。 */
+    float pp = core->sense.encoder.pole_pairs;
+    float mech_lim = core->ctrl.speed_limit / pp;
+    if (core->ctrl.target_spd > mech_lim) core->ctrl.target_spd = mech_lim;
+    else if (core->ctrl.target_spd < -mech_lim) core->ctrl.target_spd = -mech_lim;
+    core->ctrl.target_spd *= pp;
 }

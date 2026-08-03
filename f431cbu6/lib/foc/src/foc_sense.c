@@ -85,7 +85,7 @@ void foc_sense_encoder_update(foc_encoder_ctx_t *ctx, const hal_encoder_t *hal)
     if (!hal || !hal->get_angle) return;
 
     float mech = hal->get_angle();
-    float elec = mech * ctx->pole_pairs - ctx->offset_rad;
+    float elec = mech * ctx->pole_pairs - ctx->offset_rad + FOC_FRAME_CORR;
     elec = _wrap(elec);
 
     ctx->angle.rad = elec;

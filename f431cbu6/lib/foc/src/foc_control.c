@@ -15,6 +15,7 @@ void foc_control_init(foc_control_t *ctrl,
     ctrl->target_id  = 0.0f;
     ctrl->vd = 0.0f;
     ctrl->vq = 0.0f;
+    ctrl->spd_fb_filt = 0.0f;
     ctrl->dt_current  = dt_current;
     ctrl->dt_speed    = dt_speed;
     ctrl->dt_position = dt_position;
@@ -37,6 +38,7 @@ void foc_control_reset_all(foc_control_t *ctrl)
     pi_reset(&ctrl->pi_spd);
     pi_reset(&ctrl->pi_id);
     pi_reset(&ctrl->pi_iq);
+    ctrl->spd_fb_filt = 0.0f;
 }
 
 void foc_control_set_mode(foc_control_t *ctrl, foc_ctrl_mode_t mode)
@@ -74,7 +76,10 @@ void foc_control_set_limits(foc_control_t *ctrl,
 void foc_control_current_loop(foc_control_t *ctrl,
                               float id_fb, float iq_fb, float vbus)
 {
-    ctrl->vd = 0.0f;
+    /* d/q 双轴电流环：原实现 vd 写死 0、只有 q 轴 PI，id 完全不受控 →
+     * d 轴电流漂移 + 交叉耦合振荡（实测 id 振荡到 -0.28A 且不收敛）。
+     * 此处补上 d 轴控制（target_id 默认 0）。 */
+    ctrl->vd = pi_update(&ctrl->pi_id, ctrl->target_id - id_fb, ctrl->dt_current);
     ctrl->vq = pi_update(&ctrl->pi_iq, ctrl->target_iq - iq_fb, ctrl->dt_current);
 
     float vmax = vbus * FOC_VOLTAGE_LIMIT_RATIO * FOC_INV_SQRT3;
@@ -92,6 +97,7 @@ void foc_control_speed_loop(foc_control_t *ctrl, float speed_fb)
     if (ctrl->mode == FOC_MODE_IDLE)    return;
     if (ctrl->mode == FOC_MODE_TORQUE)  return;
 
+    /* 速度反馈：长测速窗(256≈32ms)已在编码器侧平滑，不再叠加滤波避免滞后拖累跟踪。 */
     float fb = speed_fb;
     if (fb > -FOC_SPEED_DEADBAND && fb < FOC_SPEED_DEADBAND)
         fb = 0.0f;   /* 死区：静止/极低速时残留速度噪声不进入速度环 */

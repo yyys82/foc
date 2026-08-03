@@ -32,9 +32,11 @@
 #define _2PI               6.28318530718f
 #define RAD_PER_COUNT      (_2PI / AS5600_RESOLUTION)
 #define FOC_HCLK_HZ        170000000.0f   /* G431 HCLK = 170MHz，DWT 计数频率 */
-#define AS5600_DIR_SIGN    1   /* 编码器方向：若重烧仍抖动/反向，改 -1 试。 */
-#define SPD_EST_WINDOW     64    /* 速度估计滑动窗口：~8kHz 真实更新下 ≈8ms、滞后≤4ms，
-                                    低速 1LSB 量化误差被平均、静止速度≈0；如响应慢可减到 32 */
+#define AS5600_DIR_SIGN    -1  /* 编码器方向：实测 +iq 命令产生反向旋转(mech_spd 为负)，
+                                   翻 -1 使 +iq→正向转矩、速度反馈与命令同向。 */
+#define SPD_EST_WINDOW     256   /* 速度估计滑动窗口：~8kHz 真实更新下 ≈32ms。
+                                    低速时单样本位移 <1LSB，长窗把量化噪声平均掉，测速更平滑。
+                                    响应滞后 ~16ms，低速应用可接受；若需快响应可回调 128。 */
 #define ENC_STEP_MAX       0.3f  /* 单步合法性阈值 rad：300rad/s@8kHz≈0.0375，取 ~8× 裕量；
                                     超阈值判为 I2C 脏读，丢这一拍（连续丢→看门狗兜底） */
 #define ENC_WDG_S          0.0005f  /* 500µs 无新角度 → 标记需线程态恢复（正常 ~125µs/次） */
@@ -228,13 +230,19 @@ static void _init(void)
 
 static float _get_angle(void)
 {
+    /* DWT 时基自愈：若被调试器/复位清掉 DEMCR.TRCENA 或 DWT.CYCCNTENA，
+     * CYCCNT 停走 → 测速窗口 dt_real≈0 永远不算 → _mech_speed=0。
+     * 此处每次调用重新断言使能（2 次寄存器写，25kHz 下可忽略）。 */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CTRL |= 1;
+
     if (g_openloop)
     {
         static float syn = 0;
         syn += 0.002f;  /* ~12.5kHz * 0.002 ≈ 25 rad/s el */
         if (syn > 6.283185f) syn -= 6.283185f;
         _mech_speed = 0.05f * 12500.0f / 14.0f;  /* 等效机械速度 */
-        g_dbg_mech  = syn;
+        g_dbg_mech  = syn * AS5600_DIR_SIGN;   /* 位置环反馈须与 get_angle 同符号 */
         return syn * AS5600_DIR_SIGN;
     }
 
@@ -254,7 +262,7 @@ static float _get_angle(void)
         _publish(a, now);
         _ready = 1;
         HAL_I2C_Mem_Read_DMA(&hi2c2, 0x36 << 1, 0x0C, 1, _dma_buf, 2);
-        g_dbg_mech = a;
+        g_dbg_mech = a * AS5600_DIR_SIGN;   /* 位置环反馈须与 get_angle 同符号 */
         return a * AS5600_DIR_SIGN;
     }
 
@@ -280,8 +288,20 @@ static float _get_angle(void)
     if (dt < 0.0f) dt = 0.0f;
     float predicted = a0 + spd * dt;
 
-    g_dbg_mech = predicted;
+    g_dbg_mech = predicted * AS5600_DIR_SIGN;   /* 位置环反馈须与 get_angle 同符号(否则位置环正反馈→一直转) */
     return predicted * AS5600_DIR_SIGN;
+}
+
+/* 调试：暴露发布端内部状态（线程态读，供 comm dbg 命令定位测速为何为 0） */
+void encoder_get_debug(uint32_t *pub_seq, uint32_t *suspect, int *spd_samples,
+                       float *mech_speed, float *real_angle, uint32_t *last_real_cyc)
+{
+    if (pub_seq)      *pub_seq      = _pub_seq;
+    if (suspect)      *suspect      = _suspect_cnt;
+    if (spd_samples)  *spd_samples  = _spd_samples;
+    if (mech_speed)   *mech_speed   = _mech_speed;
+    if (real_angle)   *real_angle   = _real_angle;
+    if (last_real_cyc)*last_real_cyc= _last_real_cyc;
 }
 
 static float _get_speed(void) { return _mech_speed * AS5600_DIR_SIGN; }

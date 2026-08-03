@@ -5,100 +5,143 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FOC 上位机 (Web Serial)</title>
 <style>
+  /* ---- 主题（浅/深自适应，色阶来自 dataviz 验证调色板） ---- */
   :root{
-    --bg:#ffffff; --panel:#f6f8fa; --panel2:#eef1f5; --line:#d9dee5;
-    --text:#1f2328; --muted:#5f6b78; --accent:#185fa5; --accent2:#0f6e56;
-    --ok:#2e7d32; --err:#c0392b; --warn:#b9770e;
+    color-scheme: light;
+    --bg:#f9f9f7; --surface:#fcfcfb; --panel:#ffffff; --line:#e1e0d9; --line2:#c3c2b7;
+    --text:#0b0b0b; --muted:#52514e; --accent:#2a78d6; --accent2:#1baf7a;
+    --ok:#0ca30c; --err:#d03b3b; --warn:#fab219; --term-bg:#0f1419; --term-ink:#d6e2ee;
+    --series1:#2a78d6; --series2:#eb6834; --series3:#1baf7a; --series4:#eda100;
+    --series5:#e87ba4; --series6:#008300; --series7:#4a3aa7; --series8:#e34948; --tgt:#898781;
   }
+  @media (prefers-color-scheme: dark){
+    :root:where(:not([data-theme="light"])){
+      color-scheme: dark;
+      --bg:#0d0d0d; --surface:#1a1a19; --panel:#141414; --line:#2c2c2a; --line2:#383835;
+      --text:#ffffff; --muted:#c3c2b7; --accent:#3987e5; --accent2:#199e70;
+      --series1:#3987e5; --series2:#d95926; --series3:#199e70; --series4:#c98500;
+      --series5:#d55181; --series6:#008300; --series7:#9085e9; --series8:#e66767; --tgt:#898781;
+    }
+  }
+  :root[data-theme="light"]{ color-scheme:light; }
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --bg:#0d0d0d; --surface:#1a1a19; --panel:#141414; --line:#2c2c2a; --line2:#383835;
+    --text:#ffffff; --muted:#c3c2b7; --accent:#3987e5; --accent2:#199e70;
+    --series1:#3987e5; --series2:#d95926; --series3:#199e70; --series4:#c98500;
+    --series5:#d55181; --series6:#008300; --series7:#9085e9; --series8:#e66767; --tgt:#898781;
+  }
+
   *{box-sizing:border-box}
-  body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif;
+  body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
        background:var(--bg); color:var(--text); font-size:13px; line-height:1.5}
-  header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+  header{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);
+         background:var(--panel);position:sticky;top:0;z-index:5}
   header h1{font-size:15px;margin:0;font-weight:600}
   header .sub{color:var(--muted);font-size:12px}
-  main{display:grid;grid-template-columns:320px 1fr;gap:12px;padding:12px;align-items:start}
+  .spacer{flex:1}
+
+  main{display:grid;grid-template-columns:300px 1fr;gap:12px;padding:12px;align-items:start}
   @media(max-width:900px){main{grid-template-columns:1fr}}
+  aside{display:flex;flex-direction:column;gap:12px}
   .card{border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:10px 12px}
-  .card h2{font-size:13px;margin:0 0 8px;font-weight:600;color:var(--accent)}
-  .row{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;align-items:center}
-  button{font:inherit;border:1px solid var(--line);background:#fff;border-radius:7px;padding:6px 10px;cursor:pointer;color:var(--text)}
+  .card h2{font-size:12px;margin:0 0 8px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:.03em}
+  .row{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:7px;align-items:center}
+  .row:last-child{margin-bottom:0}
+
+  button{font:inherit;border:1px solid var(--line2);background:var(--surface);border-radius:7px;
+         padding:5px 10px;cursor:pointer;color:var(--text);transition:border-color .12s,background .12s}
   button:hover{border-color:var(--accent)}
   button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
   button.danger{background:var(--err);color:#fff;border-color:var(--err)}
   button.on{background:var(--accent2);color:#fff;border-color:var(--accent2)}
-  input,select{font:inherit;border:1px solid var(--line);border-radius:7px;padding:5px 7px;background:#fff;color:var(--text);width:84px}
-  input.wide{width:140px}
-  label{color:var(--muted)}
+  button.mode{min-width:44px}
+  button.mode.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+  input,select{font:inherit;border:1px solid var(--line2);border-radius:6px;padding:4px 6px;
+               background:var(--surface);color:var(--text)}
+  input.wide{width:150px}
+  label{color:var(--muted);font-size:12px}
   .hint{color:var(--muted);font-size:11px;margin-top:4px}
-  .sig-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 10px;margin-top:4px}
-  .sig-grid label{display:flex;align-items:center;gap:6px;color:var(--text);font-size:12px;cursor:pointer}
-  .swatch{width:10px;height:10px;border-radius:2px;display:inline-block}
-  #chartWrap{border:1px solid var(--line);border-radius:8px;background:#fbfcfe;overflow:hidden}
-  canvas{display:block;width:100%;height:340px}
-  #term{height:200px;overflow:auto;background:#0f1419;color:#d6e2ee;font-family:ui-monospace,Menlo,Consolas,monospace;
-        font-size:12px;padding:8px;border-radius:8px;border:1px solid var(--line)}
-  #term .ok{color:#7ee787}#term .err{color:#ff7b72}#term .sys{color:#79c0ff}#term .resp{color:#d6e2ee}
+  .warnbox{border:1px solid var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent);
+           color:var(--text);padding:7px 9px;border-radius:8px;font-size:12px;margin-bottom:8px}
+
+  /* ---- 波形（单框叠加） ---- */
+  #chartWrap{border:1px solid var(--line);border-radius:8px;background:var(--surface);overflow:hidden;height:360px}
+  canvas{display:block;width:100%;height:360px}
+  .legend{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;font-size:12px;color:var(--muted)}
+  .legend .lg{display:inline-flex;align-items:center;gap:5px}
+  .legend .lg b{color:var(--text);font-variant-numeric:tabular-nums}
+  .swatch{width:10px;height:10px;border-radius:2px;display:inline-block;flex:none}
+
+  .bottom-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+  @media(max-width:1100px){.bottom-grid{grid-template-columns:1fr}}
+
+  .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;
+         background:var(--surface);border:1px solid var(--line2)}
+  .badge.ok{background:color-mix(in srgb,var(--ok) 12%,transparent);color:var(--ok);border-color:var(--ok)}
+  .badge.off{background:color-mix(in srgb,var(--err) 10%,transparent);color:var(--err);border-color:var(--err)}
+  #statusBadges{display:flex;gap:6px;flex-wrap:wrap}
+
   table.read{width:100%;border-collapse:collapse;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
-  table.read td{border:1px solid var(--line);padding:3px 6px}
-  table.read td.k{color:var(--muted);width:42%}
-  .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;background:var(--panel2);border:1px solid var(--line)}
-  .badge.ok{background:#e7f6e9;color:var(--ok);border-color:#bfe3c3}
-  .badge.off{background:#fdecea;color:var(--err);border-color:#f5c6c0}
-  details{margin-top:8px}summary{cursor:pointer;color:var(--accent);font-size:12px}
-  code{background:var(--panel2);padding:1px 5px;border-radius:5px;font-family:ui-monospace,Menlo,Consolas,monospace}
-  .warnbox{border:1px solid #f0c36d;background:#fff8e6;color:#7a5b13;padding:8px 10px;border-radius:8px;font-size:12px;margin-bottom:8px}
+  table.read td{border-bottom:1px solid var(--line);padding:2px 6px}
+  table.read td.k{color:var(--muted);width:48%}
+
+  #term{height:220px;overflow:auto;background:var(--term-bg);color:var(--term-ink);
+        font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;padding:8px;border-radius:8px;
+        border:1px solid var(--line)}
+  #term .ok{color:#7ee787}#term .err{color:#ff7b72}#term .sys{color:#79c0ff}#term .resp{color:#d6e2ee}
+
+  details{margin-top:6px}summary{cursor:pointer;color:var(--accent);font-size:12px}
+  code{background:var(--surface);padding:1px 5px;border-radius:5px;font-family:ui-monospace,monospace}
 </style>
 </head>
 <body>
 <header>
   <h1>FOC 上位机</h1>
-  <span class="sub">Web Serial · STM32G431 USART1 · 115200/8N1</span>
+  <span class="sub">Web Serial · STM32G431 · USART1 115200</span>
+  <div class="spacer"></div>
+  <select id="baud" title="波特率"><option>115200</option><option>921600</option><option>256000</option><option>57600</option><option>9600</option></select>
+  <button id="btnTheme" title="切换浅/深色">🌓</button>
   <span id="connBadge" class="badge off">未连接</span>
+  <button id="btnConnect" class="primary">连接</button>
+  <button id="btnDisconnect">断开</button>
 </header>
 
 <main>
-  <!-- 左：连接 + 命令 -->
-  <div>
+  <aside>
     <div class="card">
-      <h2>① 连接串口</h2>
-      <div class="row">
-        <select id="baud"><option>115200</option><option>921600</option><option>256000</option><option>57600</option><option>9600</option></select>
-        <button id="btnConnect" class="primary">连接</button>
-        <button id="btnDisconnect">断开</button>
-      </div>
-      <div class="hint">需用 Chrome / Edge 打开本页（Web Serial 仅 Chromium 支持）。<br>连接后选对 MCU 的 COM 口。</div>
-    </div>
-
-    <div class="card">
-      <h2>② 运行控制</h2>
+      <h2>运行控制</h2>
       <div class="warnbox">⚠ 点 Enable 会真正给电机上电并转动，务必确认机械安全！</div>
       <div class="row">
         <button id="btnEnable" class="on">Enable</button>
         <button id="btnDisable">Disable</button>
         <button id="btnStop" class="danger">Stop</button>
-      </div>
-      <div class="row">
-        <button id="btnReset" class="danger">⟳ 复位 (Reset MCU)</button>
-        <span class="hint" style="margin:0">发 stop→disable→reset，真重启 MCU 并清空波形</span>
+        <button id="btnReset" class="danger" title="stop→disable→reset，真重启 MCU">⟳ 复位</button>
       </div>
       <div class="row">
         <label>模式</label>
-        <button data-mode="idle">idle</button>
-        <button data-mode="pos">pos</button>
-        <button data-mode="spd">spd</button>
-        <button data-mode="cur">cur</button>
+        <button class="mode" data-mode="idle">idle</button>
+        <button class="mode" data-mode="pos">pos</button>
+        <button class="mode" data-mode="spd">spd</button>
+        <button class="mode" data-mode="cur">cur</button>
       </div>
       <div class="row">
         <label>目标</label>
-        <input id="targetVal" type="number" step="any" value="120">
-        <button id="btnTarget">Set Target</button>
+        <input id="targetVal" type="number" step="any" value="5">
+        <button id="btnTarget" class="primary">Set</button>
       </div>
+    </div>
+
+    <div class="card">
+      <h2>PID 整定</h2>
       <div class="row">
-        <label>PID</label>
-        <select id="pidLoop"><option value="0">0 位置</option><option value="1" selected>1 速度</option><option value="2">2 id</option><option value="3">3 iq</option></select>
-        <input id="pidKp" type="number" step="any" value="0.18" title="kp">
-        <input id="pidKi" type="number" step="any" value="0.5" title="ki">
-        <input id="pidKd" type="number" step="any" value="0" title="kd(可选)">
+        <select id="pidLoop">
+          <option value="0">0 位置</option><option value="1" selected>1 速度</option>
+          <option value="2">2 id</option><option value="3">3 iq</option>
+        </select>
+        <input id="pidKp" type="number" step="any" value="0.03" title="kp">
+        <input id="pidKi" type="number" step="any" value="0.02" title="ki">
+        <input id="pidKd" type="number" step="any" value="0" title="kd">
         <button id="btnPid">Set PID</button>
       </div>
       <div class="row">
@@ -106,21 +149,63 @@
         <button id="btnEncoder">encoder</button>
         <button id="btnHelp">help</button>
       </div>
-      <div class="row">
-        <label>monitor</label>
-        <input id="monVars" class="wide" value="spd iq id">
-        <button id="btnMon">启动</button>
-        <button id="btnMonOff">关闭</button>
-      </div>
     </div>
 
     <div class="card">
-      <h2>③ 命令输入</h2>
+      <h2>PID 自整定</h2>
+      <div class="warnbox">⚠ 阶跃自整定会真正转动电机，结束后自动断电；请确认台架安全。</div>
+      <details>
+        <summary>电流环 · 模型计算</summary>
+        <div class="row">
+          <label>R Ω</label><input id="tR" type="number" step="any" value="0.12" style="width:56px">
+          <label>L mH</label><input id="tL" type="number" step="any" value="0.35" style="width:56px">
+          <label>ωc</label>
+          <select id="tBW" style="width:76px">
+            <option value="800">800</option><option value="1000" selected>1000</option>
+            <option value="1500">1500</option><option value="2000">2000</option>
+          </select>
+          <button id="btnCurCalc" class="primary">计算</button>
+        </div>
+        <div class="hint" id="curCalcResult">kp=L·ωc，ki=R·ωc → 下发 id/iq 电流环</div>
+      </details>
+      <details open>
+        <summary>速度环 · 阶跃自整定</summary>
+        <div class="row">
+          <label>目标el</label><input id="spdAmp" type="number" step="any" value="30" style="width:56px">
+          <label>秒</label><input id="spdDur" type="number" step="any" value="3" style="width:44px">
+          <button id="btnSpdAuto" class="primary">开始</button>
+          <button id="btnSpdApply" disabled>应用</button>
+        </div>
+        <div class="hint" id="spdAutoResult">—</div>
+      </details>
+      <details>
+        <summary>位置环 · 阶跃自整定</summary>
+        <div class="row">
+          <label>目标rad</label><input id="posAmp" type="number" step="any" value="1.0" style="width:56px">
+          <label>秒</label><input id="posDur" type="number" step="any" value="3" style="width:44px">
+          <button id="btnPosAuto" class="primary">开始</button>
+          <button id="btnPosApply" disabled>应用</button>
+        </div>
+        <div class="hint" id="posAutoResult">—</div>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>波形监控</h2>
       <div class="row">
-        <input id="cmd" class="wide" style="width:200px" placeholder="直接输入命令，回车发送">
+        <input id="monVars" class="wide" value="spd iq id" title="空格分隔的变量名">
+        <button id="btnMon" class="primary">启动</button>
+        <button id="btnMonOff">关闭</button>
+      </div>
+      <div class="sig-grid" id="sigGrid"></div>
+    </div>
+
+    <div class="card">
+      <h2>命令</h2>
+      <div class="row">
+        <input id="cmd" class="wide" style="flex:1" placeholder="直接输入命令，回车发送">
         <button id="btnSend" class="primary">Send</button>
       </div>
-      <div class="hint">回车 = 发送并追加 <code>\n</code>。命令见下方协议。</div>
       <details>
         <summary>通信协议（来自固件 comm_host.c）</summary>
         <div class="hint" style="white-space:pre-wrap;font-family:ui-monospace,monospace">
@@ -129,67 +214,64 @@
   target &lt;值&gt;            # 按当前模式设目标
   pid &lt;环&gt; &lt;kp&gt; &lt;ki&gt; [kd] # 环:0位置 1速度 2=id 3=iq
   enable / disable / stop / reset
-  monitor [pos spd iq id vbus]  # 无参=切换开关
+  monitor [pos spd iq id vbus ...]  # 无参=切换开关
   status / encoder / help
-
 回传:
-  OK: ... / ERR: ...
-  STATUS: mode=.. en=.. state=.. fault=.. vbus=.. pos=.. spd=.. id=.. iq=..   # 结构化状态(上位机⑥卡片解析)
-  上电横幅: 每次复位/上电自动打印一行 STATUS: + "FOC ready" 提示
-  监视流: t=&lt;秒&gt;, spd=.. iq=.. id=.. vbus=..
-  调试CSV(200Hz): pos,tpos,spd,tspd,iq,tiq,id,vq</div>
+  STATUS: mode=.. en=.. ...   # 结构化状态
+  上电横幅: 复位后自动 STATUS + "FOC ready"
+  监视流: t=&lt;秒&gt;, name=value ...
+        </div>
       </details>
     </div>
-  </div>
+  </aside>
 
-  <!-- 右：图表 + 读数 + 终端 -->
   <div>
     <div class="card">
-      <h2>④ 实时波形</h2>
+      <h2>实时波形 <span style="color:var(--muted);text-transform:none;font-weight:400;font-size:11px">
+        （多信号单框叠加，各自自动归一化到框高）</span></h2>
       <div id="chartWrap"><canvas id="chart"></canvas></div>
       <div class="row" style="margin-top:8px">
         <button id="btnClear">清空图表</button>
-        <span class="hint" style="margin:0">X 轴 = 采样序号（左进右出），每信号独立自动量程，虚线=0。</span>
+        <div class="legend" id="legend"></div>
       </div>
-      <div class="sig-grid" id="sigGrid"></div>
     </div>
 
-    <div class="card">
-      <h2>⑤ 实时读数</h2>
-      <table class="read"><tbody id="readout"></tbody></table>
-    </div>
-
-    <div class="card">
-      <h2>⑥ 电机状态</h2>
-      <div class="row" id="statusBadges">
-        <span class="badge" id="stMode">模式 —</span>
-        <span class="badge off" id="stEn">断电</span>
-        <span class="badge" id="stState">状态 —</span>
-        <span class="badge ok" id="stFault">无故障</span>
+    <div class="bottom-grid">
+      <div class="card">
+        <h2>电机状态</h2>
+        <div class="row" id="statusBadges">
+          <span class="badge" id="stMode">模式 —</span>
+          <span class="badge off" id="stEn">断电</span>
+          <span class="badge" id="stState">状态 —</span>
+          <span class="badge ok" id="stFault">无故障</span>
+        </div>
+        <table class="read"><tbody id="statusTable"></tbody></table>
       </div>
-      <table class="read"><tbody id="statusTable"></tbody></table>
-      <div class="hint">上电横幅 / 连接后自动刷新；也可点 ② 区 status 按钮手动刷新。</div>
-    </div>
-
-    <div class="card">
-      <h2>⑦ 终端日志</h2>
-      <div id="term"></div>
+      <div class="card">
+        <h2>实时读数</h2>
+        <table class="read"><tbody id="readout"></tbody></table>
+      </div>
+      <div class="card">
+        <h2>终端日志</h2>
+        <div id="term"></div>
+      </div>
     </div>
   </div>
 </main>
 
 <script>
 "use strict";
+/* ---- 信号定义：分类色（dataviz 验证调色板）、目标类虚线 ---- */
 const SIGNAL_DEFS = {
-  spd:  {label:'速度 spd (rad/s)', color:'#185fa5'},
-  iq:   {label:'iq 实测 (A)',      color:'#ba7517'},
-  id:   {label:'id 实测 (A)',      color:'#0f6e56'},
-  tiq:  {label:'iq 目标 tiq (A)',  color:'#993c1d'},
-  vq:   {label:'vq (V)',           color:'#534ab7'},
-  pos:  {label:'位置 pos (rad)',   color:'#5f6e5a'},
-  vbus: {label:'母线 vbus (V)',    color:'#3b6d11'},
-  tpos: {label:'目标位置 tpos',    color:'#888'},
-  tspd: {label:'目标速度 tspd',    color:'#888'},
+  spd:  {label:'速度 spd',     light:'#2a78d6', dark:'#3987e5'},
+  iq:   {label:'iq 实测',      light:'#eb6834', dark:'#d95926'},
+  id:   {label:'id 实测',      light:'#1baf7a', dark:'#199e70'},
+  tiq:  {label:'iq 目标',      light:'#eda100', dark:'#c98500'},
+  vq:   {label:'vq',           light:'#e87ba4', dark:'#d55181'},
+  pos:  {label:'位置 pos',     light:'#008300', dark:'#008300'},
+  vbus: {label:'母线 vbus',    light:'#4a3aa7', dark:'#9085e9'},
+  tpos: {label:'目标位置',     light:'#898781', dark:'#898781', dash:true},
+  tspd: {label:'目标速度',     light:'#898781', dark:'#898781', dash:true},
 };
 const MAXPTS = 600;
 const buffers = {}; const latest = {};
@@ -197,17 +279,35 @@ for (const k in SIGNAL_DEFS){ buffers[k] = []; latest[k] = NaN; }
 
 const enc = new TextEncoder(), dec = new TextDecoder();
 let port=null, reader=null, writer=null, reading=false, recvBuf='';
+let reconnecting=false, reconnectToken=0;
+/* PID 自整定状态 */
+let autoTuneActive=false, autoTuneVar='spd', autoTuneBusy=false, autoRec=[];
+const SUG = { spd:{kp:0.03, ki:0.02}, pos:{kp:1.0, ki:0.0} };  /* 当前已知增益起点 */
+
+/* ---------- 主题 ---------- */
+const darkQ = matchMedia('(prefers-color-scheme: dark)');
+function isDark(){ return document.documentElement.getAttribute('data-theme')==='dark'
+  || (!document.documentElement.getAttribute('data-theme') && darkQ.matches); }
+document.getElementById('btnTheme').onclick = ()=>{
+  const cur = document.documentElement.getAttribute('data-theme');
+  document.documentElement.setAttribute('data-theme', cur==='dark'?'light':'dark');
+};
 
 /* ---------- 信号选择 UI ---------- */
 const sigGrid = document.getElementById('sigGrid');
+sigGrid.style.cssText='display:grid;grid-template-columns:1fr 1fr;gap:3px 8px;margin-top:2px';
 const cb = {};
-for (const k of ['spd','iq','id','tiq','vq','pos','vbus','tpos','tspd']){
+for (const k of Object.keys(SIGNAL_DEFS)){
   const d = SIGNAL_DEFS[k];
+  const col = d.light;
   const lab = document.createElement('label');
-  lab.innerHTML = `<span class="swatch" style="background:${d.color}"></span><input type="checkbox" ${['spd','iq','id'].includes(k)?'checked':''} data-k="${k}"> ${d.label}`;
+  lab.style.cssText='display:flex;align-items:center;gap:5px;color:var(--text);font-size:12px;cursor:pointer';
+  lab.innerHTML = `<span class="swatch" style="background:${col}"></span><input type="checkbox" ${['spd','iq','id'].includes(k)?'checked':''} data-k="${k}"> ${d.label}`;
   sigGrid.appendChild(lab);
   cb[k] = lab.querySelector('input');
+  cb[k].onchange = buildLegend;
 }
+
 /* ---------- 读数表 ---------- */
 const readout = document.getElementById('readout');
 const READ_KEYS = ['pos','tpos','spd','tspd','iq','tiq','id','vq','vbus'];
@@ -219,11 +319,8 @@ for (const k of READ_KEYS){
 /* ---------- 状态表 ---------- */
 const statusTable = document.getElementById('statusTable');
 const ST_KEYS = [
-  ['vbus','母线电压 vbus (V)'],
-  ['pos','位置 pos (rad)'],
-  ['spd','速度 spd (rad/s)'],
-  ['id','id 实测 (A)'],
-  ['iq','iq 实测 (A)'],
+  ['vbus','母线电压 vbus (V)'], ['pos','位置 pos (rad)'], ['spd','速度 spd (rad/s)'],
+  ['id','id 实测 (A)'], ['iq','iq 实测 (A)'],
 ];
 for (const [k,label] of ST_KEYS){
   const tr = document.createElement('tr');
@@ -254,7 +351,8 @@ function parseStatus(line){
     if (el) el.textContent = (k in obj) ? obj[k] : '—';
   }
 }
-/* ---------- 终端日志 ---------- */
+
+/* ---------- 终端 ---------- */
 const term = document.getElementById('term');
 function log(msg, cls){
   const div = document.createElement('div');
@@ -282,12 +380,11 @@ async function connect(){
     reading = true; readLoop();
     setConnUI(true);
     log(`已连接 USART1 @${baud} 8N1`,'sys');
-    /* 连接后自动拉一次状态：上电横幅可能因连接前已发出而丢失，这里兜底刷新状态卡片 */
     setTimeout(()=>{ if (writer) sendLine('status'); }, 300);
   }catch(e){ log('连接失败: ' + e.message,'err'); }
 }
 async function disconnect(){
-  reconnectToken++;  // 取消任何进行中的自动重连
+  reconnectToken++;
   await safeClose();
   port=null; setConnUI(false); log('已断开','sys');
 }
@@ -305,23 +402,16 @@ async function doReset(){
   await sendLine('reset');
   for (const k in buffers) buffers[k].length = 0;
   for (const k in latest) latest[k] = NaN;
-  /* 不在这里直接重连：复位会让串口流中断，readLoop 检测到 done 会自动触发 reconnect。
-     设一个 1.5s 兜底定时器：若流未结束（极端情况），也强制重连，避免界面卡死。 */
-  setTimeout(()=>{ if(!reconnecting) reconnect('MCU 复位 / 串口流中断，正在自动重连…'); }, 1500);
+  /* 复位后不强制重连：USB 串口在 MCU 复位时不断开，流没有 done；
+     约 3s 后上电横幅自动刷新状态。仅当流真中断(done)才由 readLoop 自动重连。 */
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-/* 给可能永久挂起的异步调用加超时，避免 port.open() 在 USB 重枚举时卡死导致重连无响应 */
 function withTimeout(p, ms, label){
   return Promise.race([
     p,
     new Promise((_, rej) => setTimeout(()=>rej(new Error('timeout:'+label)), ms))
   ]);
 }
-let reconnecting = false;
-let reconnectToken = 0;
-/* 彻底关闭串口：先停读取，再取消并排空 reader、释放锁、关闭 writer、最后 close port。
-   关键：必须在 port.close() 之前 await reader 的取消并让 readLoop 真正退出，
-   否则 close 可能挂起（这是第二次复位后卡住的根因之一）。 */
 async function safeClose(){
   reading = false;
   const r = reader, w = writer, p = port;
@@ -338,21 +428,18 @@ async function safeClose(){
   }catch(e){}
   try{ if (p){ await p.close().catch(()=>{}); } }catch(e){}
 }
-/* 自动重连：复位/断线后自动关闭并重新打开 port、重建 reader，无需用户重新点【连接】。
-   对已授权的 port 对象，port.open() 不需用户手势。带超时与重试上限，失败会明确提示手动【连接】。 */
 async function reconnect(reason){
   if (reconnecting) return;
   reconnecting = true;
   const token = ++reconnectToken;
   log(reason || '串口流中断，正在自动重连…','sys');
   await safeClose();
-  await sleep(800);  // 等待 MCU 重启完成（boot + foc_main_init + comm_banner）
+  await sleep(800);
   const baud = parseInt(document.getElementById('baud').value, 10);
   let ok = false;
   for (let i=0;i<15 && token===reconnectToken;i++){
     try{
-      await withTimeout(
-        port.open({baudRate:baud, dataBits:8, stopBits:1, parity:'none', flowControl:'none'}),
+      await withTimeout(port.open({baudRate:baud, dataBits:8, stopBits:1, parity:'none', flowControl:'none'}),
         2000, 'open');
       writer = port.writable.getWriter();
       reader = port.readable.getReader();
@@ -360,9 +447,12 @@ async function reconnect(reason){
       setConnUI(true);
       ok = true;
       log('✅ 已自动重连，可重新下发命令','sys');
-      setTimeout(()=>{ if (writer) sendLine('status'); }, 300);  // 兜底刷新状态卡片
+      setTimeout(()=>{ if (writer) sendLine('status'); }, 300);
       break;
-    }catch(e){ await sleep(200); }
+    }catch(e){
+      try{ if (port) await port.close().catch(()=>{}); }catch(_){}
+      await sleep(200);
+    }
   }
   reconnecting = false;
   if (!ok){
@@ -376,7 +466,6 @@ async function readLoop(){
     while (reading && reader){
       const {value, done} = await reader.read();
       if (done){
-        // 流结束：MCU 复位 / 意外断线。触发自动重连（reader 交由 safeClose 统一关闭）。
         reconnect('串口流结束（MCU 可能已复位/断开），尝试自动重连…');
         return;
       }
@@ -391,23 +480,17 @@ async function readLoop(){
       }
     }
   }catch(e){
-    if (reconnecting || !reading) return;   // 主动重连过程中的读取中断，忽略
+    if (reconnecting || !reading) return;
     log('读取错误: ' + e.message,'err');
   }
 }
 
 /* ---------- 解析回传 ---------- */
 function pushSignal(k, v){ const b = buffers[k]; b.push(v); latest[k]=v; if (b.length>MAXPTS) b.shift(); }
-
 function handleLine(raw){
   const line = raw.trim();
   if (!line) return;
-  // 结构化状态: STATUS: mode=... en=... state=... fault=... vbus=... ...
-  if (line.startsWith('STATUS:')){
-    parseStatus(line);
-    return;
-  }
-  // 监视流: t=<秒>, name=value ...
+  if (line.startsWith('STATUS:')){ parseStatus(line); return; }
   if (line.startsWith('t=')){
     const parts = line.split(/\s+/);
     for (let i=1;i<parts.length;i++){
@@ -417,9 +500,19 @@ function handleLine(raw){
         if (SIGNAL_DEFS[name] && isFinite(val)) pushSignal(name, val);
       }
     }
+    if (autoTuneActive){   /* 自整定采集：记录 t 与目标变量 */
+      const rec = {t:0, val:NaN};
+      for (let i=1;i<parts.length;i++){
+        const kv = parts[i].split('=');
+        if (kv.length===2){
+          if (kv[0]==='t') rec.t = parseFloat(kv[1]);
+          else if (kv[0]===autoTuneVar) rec.val = parseFloat(kv[1]);
+        }
+      }
+      if (isFinite(rec.val)) autoRec.push(rec);
+    }
     return;
   }
-  // 调试 CSV: pos,tpos,spd,tspd,iq,tiq,id,vq
   const segs = line.split(',');
   if (segs.length===8 && segs.every(s=>{const n=parseFloat(s);return isFinite(n);})){
     const v = segs.map(parseFloat);
@@ -428,12 +521,31 @@ function handleLine(raw){
     latest.tpos = v[1]; latest.tspd = v[3];
     return;
   }
-  // 其余当作文本响应
   const cls = line.startsWith('OK') ? 'ok' : (line.startsWith('ERR') ? 'err' : 'resp');
   log(line, cls);
 }
 
-/* ---------- 绘图 ---------- */
+/* ---------- 图例 ---------- */
+function buildLegend(){
+  const el = document.getElementById('legend'); el.innerHTML='';
+  for (const k of Object.keys(SIGNAL_DEFS)){
+    if (!cb[k] || !cb[k].checked) continue;
+    const d = SIGNAL_DEFS[k];
+    const col = isDark() ? d.dark : d.light;
+    const span = document.createElement('span');
+    span.className = 'lg';
+    span.innerHTML = `<span class="swatch" style="background:${col}"></span>${d.label} <b id="lg_${k}">—</b>`;
+    el.appendChild(span);
+  }
+}
+function updateLegend(){
+  for (const k of Object.keys(SIGNAL_DEFS)){
+    const el = document.getElementById('lg_' + k);
+    if (el) el.textContent = isFinite(latest[k]) ? latest[k].toFixed(3) : '—';
+  }
+}
+
+/* ---------- 绘图：单框叠加，各信号归一化 ---------- */
 const canvas = document.getElementById('chart');
 const ctx = canvas.getContext('2d');
 let dpr = window.devicePixelRatio || 1;
@@ -448,50 +560,125 @@ function draw(){
   requestAnimationFrame(draw);
   const cw = canvas.width/dpr, ch = canvas.height/dpr;
   ctx.setTransform(dpr,0,0,dpr,0,0);
-  ctx.clearRect(0,0,cw,ch);
+  const dark = isDark();
+  const surface = dark ? '#1a1a19' : '#fcfcfb';
+  const gridLine = dark ? '#2c2c2a' : '#e1e0d9';
+  const ink = dark ? '#ffffff' : '#0b0b0b';
+  const muted = '#898781';
+  ctx.fillStyle = surface; ctx.fillRect(0,0,cw,ch);
+
   const enabled = Object.keys(SIGNAL_DEFS).filter(k=>cb[k] && cb[k].checked);
   if (enabled.length===0){
-    ctx.fillStyle='#888'; ctx.font='13px sans-serif'; ctx.fillText('勾选要显示的信号',12,24);
-  } else {
-    const stripH = ch/enabled.length;
-    enabled.forEach((k,i)=>{
-      const y0=i*stripH;
-      ctx.fillStyle = (i%2)?'#f4f7fb':'#eef2f7';
-      ctx.fillRect(0,y0,cw,stripH);
-      ctx.fillStyle = SIGNAL_DEFS[k].color; ctx.font='12px sans-serif';
-      ctx.fillText(SIGNAL_DEFS[k].label,8,y0+14);
-      const buf = buffers[k];
-      if (buf.length>1){
-        let mn=Infinity,mx=-Infinity;
-        for (const v of buf){ if(v<mn)mn=v; if(v>mx)mx=v; }
-        if (mx-mn<1e-6){ mx+=1; mn-=1; }
-        const pad=(mx-mn)*0.1; mn-=pad; mx+=pad;
-        const xstep = cw/(MAXPTS-1);
-        const top=22, bot=stripH-8;
-        ctx.strokeStyle=SIGNAL_DEFS[k].color; ctx.lineWidth=1.2; ctx.beginPath();
-        for (let j=0;j<buf.length;j++){
-          const x=j*xstep;
-          const y=bot-((buf[j]-mn)/(mx-mn))*(bot-top);
-          if(j===0)ctx.moveTo(x,y); else ctx.lineTo(x,y);
-        }
-        ctx.stroke();
-        if (mn<0&&mx>0){
-          const yz=bot-((0-mn)/(mx-mn))*(bot-top);
-          ctx.strokeStyle='#c9d2dc'; ctx.setLineDash([3,3]);
-          ctx.beginPath(); ctx.moveTo(0,yz); ctx.lineTo(cw,yz); ctx.stroke(); ctx.setLineDash([]);
-        }
-        ctx.fillStyle='#333'; ctx.font='11px ui-monospace,monospace';
-        ctx.fillText(buf[buf.length-1].toFixed(3), cw-86, y0+14);
-      }
-    });
+    ctx.fillStyle = muted; ctx.font='13px sans-serif'; ctx.fillText('勾选要叠加显示的信号',12,24);
+    updateLegend();
+    return;
   }
-  // 读数表
+  /* 网格线（隐性） */
+  ctx.strokeStyle = gridLine; ctx.lineWidth=1;
+  for (let i=1;i<4;i++){ const y=ch*i/4; ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(cw,y); ctx.stroke(); }
+  /* 顶部刻度行 */
+  ctx.fillStyle = muted; ctx.font='10px ui-monospace,monospace';
+  ctx.fillText('← 老', 6, ch-4); ctx.fillText('新 →', cw-30, ch-4);
+
+  const pad = 12;
+  const xstep = cw/(MAXPTS-1);
+  for (const k of enabled){
+    const buf = buffers[k];
+    if (buf.length < 2) continue;
+    const d = SIGNAL_DEFS[k];
+    const col = dark ? d.dark : d.light;
+    let mn=Infinity, mx=-Infinity;
+    for (const v of buf){ if(v<mn)mn=v; if(v>mx)mx=v; }
+    if (mx-mn < 1e-6){ mx+=1; mn-=1; }
+    const rng = (mx-mn) || 1;
+    /* 归一化到框高（indexed 到共同基），图例承载名称/最新值/颜色 */
+    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.lineJoin='round';
+    ctx.setLineDash(d.dash ? [4,3] : []);
+    ctx.beginPath();
+    for (let j=0;j<buf.length;j++){
+      const x = j*xstep;
+      const y = ch-pad - ((buf[j]-mn)/rng)*(ch-2*pad);
+      if (j===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    }
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+  updateLegend();
+  /* 读数表 */
   for (const k of READ_KEYS){
     const el = document.getElementById('ro_'+k);
     if (el) el.textContent = isFinite(latest[k]) ? latest[k].toFixed(3) : '—';
   }
 }
 draw();
+
+/* ===== PID 自整定 ===== */
+function modelCurCalc(){
+  const R = parseFloat(document.getElementById('tR').value);
+  const L = parseFloat(document.getElementById('tL').value)/1000;  /* mH→H */
+  const wc = parseFloat(document.getElementById('tBW').value);
+  if (!isFinite(R) || !isFinite(L) || R<=0 || L<=0){ log('电流环计算：R/L 非法','err'); return; }
+  const kp = L*wc, ki = R*wc;
+  document.getElementById('curCalcResult').innerHTML =
+    `kp=L·ωc=${kp.toFixed(4)} &nbsp; ki=R·ωc=${ki.toFixed(1)} &nbsp;
+     <button class="primary" onclick="sendLine('pid 2 ${kp.toFixed(4)} ${ki.toFixed(1)}');sendLine('pid 3 ${kp.toFixed(4)} ${ki.toFixed(1)}')">下发 id/iq</button>`;
+  log(`▶ 电流环模型计算：kp=${kp.toFixed(4)} ki=${ki.toFixed(1)}`,'sys');
+}
+function analyzeStep(){
+  const n = autoRec.length;
+  if (n < 6) return {err:'样本不足('+n+')，检查 monitor 是否在跑'};
+  const vals = autoRec.map(r=>r.val);
+  const k0 = Math.floor(n*0.7);
+  let ssum=0; for (let i=k0;i<n;i++) ssum+=vals[i];
+  return {n, steady:ssum/(n-k0), peak:Math.max(...vals), first:vals[0]};
+}
+function renderAutoTune(res, isSpd, target){
+  const el = document.getElementById(isSpd?'spdAutoResult':'posAutoResult');
+  if (res.err){ el.textContent = '自整定失败: '+res.err; return; }
+  const errPct = target!==0 ? Math.abs(res.steady-target)/Math.abs(target)*100 : 0;
+  const overPct = target!==0 ? (res.peak-target)/Math.abs(target)*100 : 0;
+  const g = SUG[isSpd?'spd':'pos'];
+  let tip='';
+  if (errPct>15){ g.ki = Math.min(g.ki*2, isSpd?1.0:0.5); tip='稳态误差大 → ki↑'; }
+  if (overPct>25){ g.kp = Math.max(g.kp*0.6, isSpd?0.005:0.05); tip='超调大 → kp↓'; }
+  else if (errPct<8 && overPct<15){ tip='✅ 已收敛，可保持不变'; }
+  else if (errPct<8){ g.kp = Math.min(g.kp*1.4, isSpd?0.5:8.0); tip='无超调但偏慢 → kp↑'; }
+  document.getElementById(isSpd?'btnSpdApply':'btnPosApply').disabled = false;
+  el.innerHTML = `样本=${res.n} 稳态=${res.steady.toFixed(3)} 峰值=${res.peak.toFixed(3)}
+    误差=${errPct.toFixed(1)}% 超调=${overPct.toFixed(1)}%<br>
+    ${tip} → 建议 kp=${g.kp.toFixed(4)} ki=${g.ki.toFixed(4)}（应用后可直接再测迭代）`;
+}
+async function autoTune(isSpd){
+  if (!writer){ log('未连接','err'); return; }
+  if (autoTuneBusy){ log('自整定进行中，请等待','err'); return; }
+  autoTuneBusy = true;
+  try{
+    const amp = parseFloat(document.getElementById(isSpd?'spdAmp':'posAmp').value);
+    const dur = Math.min(Math.max(parseFloat(document.getElementById(isSpd?'spdDur':'posDur').value)||3, 1), 10);
+    const varName = isSpd ? 'spd' : 'mag';   /* 位置反馈用多圈机械角 */
+    log(`▶ ${isSpd?'速度':'位置'}环自整定：target ${amp}，${dur}s（结束自动断电）`,'sys');
+    document.getElementById(isSpd?'btnSpdApply':'btnPosApply').disabled = true;
+    await sendLine('disable'); await sendLine('mode idle'); await sendLine('monitor');
+    await sleep(300);
+    await sendLine('mode ' + (isSpd?'spd':'pos'));
+    await sendLine('target ' + amp);
+    await sendLine('monitor ' + varName);
+    autoTuneActive = true; autoTuneVar = varName; autoRec = [];
+    await sleep(400);
+    await sendLine('enable');
+    await sleep(dur*1000);
+    autoTuneActive = false;
+    await sendLine('disable'); await sendLine('monitor'); await sendLine('stop'); await sendLine('mode idle');
+    const res = analyzeStep();
+    renderAutoTune(res, isSpd, amp);
+  }catch(e){ log('自整定异常: '+e.message,'err'); }
+  autoTuneBusy = false;
+}
+function applyAutoTune(isSpd){
+  const g = SUG[isSpd?'spd':'pos'];
+  const loop = isSpd ? 1 : 0;
+  sendLine(`pid ${loop} ${g.kp.toFixed(4)} ${g.ki.toFixed(4)}`);
+  log(`▶ 下发 ${isSpd?'速度':'位置'}环 kp=${g.kp.toFixed(4)} ki=${g.ki.toFixed(4)}`,'sys');
+}
 
 /* ---------- 按钮绑定 ---------- */
 document.getElementById('btnConnect').onclick = connect;
@@ -500,7 +687,11 @@ document.getElementById('btnEnable').onclick = ()=>sendLine('enable');
 document.getElementById('btnDisable').onclick = ()=>sendLine('disable');
 document.getElementById('btnStop').onclick = ()=>sendLine('stop');
 document.getElementById('btnReset').onclick = doReset;
-document.querySelectorAll('[data-mode]').forEach(b=> b.onclick=()=>sendLine('mode '+b.dataset.mode));
+document.querySelectorAll('[data-mode]').forEach(b=> b.onclick=()=>{
+  document.querySelectorAll('[data-mode]').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');
+  sendLine('mode '+b.dataset.mode);
+});
 document.getElementById('btnTarget').onclick = ()=> sendLine('target '+document.getElementById('targetVal').value);
 document.getElementById('btnPid').onclick = ()=>{
   const loop=document.getElementById('pidLoop').value;
@@ -519,6 +710,13 @@ document.getElementById('btnMonOff').onclick = ()=>sendLine('monitor');
 document.getElementById('btnClear').onclick = ()=>{ for(const k in buffers) buffers[k].length=0; };
 document.getElementById('btnSend').onclick = ()=>{ const v=document.getElementById('cmd').value.trim(); if(v) sendLine(v); };
 document.getElementById('cmd').addEventListener('keydown', e=>{ if(e.key==='Enter'){ const v=e.target.value.trim(); if(v) sendLine(v); } });
+/* PID 自整定绑定 */
+document.getElementById('btnCurCalc').onclick = modelCurCalc;
+document.getElementById('btnSpdAuto').onclick = ()=>autoTune(true);
+document.getElementById('btnSpdApply').onclick = ()=>applyAutoTune(true);
+document.getElementById('btnPosAuto').onclick = ()=>autoTune(false);
+document.getElementById('btnPosApply').onclick = ()=>applyAutoTune(false);
+buildLegend();
 </script>
 </body>
 </html>

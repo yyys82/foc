@@ -32,6 +32,10 @@ extern "C" {
 #define FOC_ENCODER_CPR_DEFAULT       4096    /* 编码器线数 (4 倍频后) */
 #define FOC_ENCODER_FILTER_ALPHA      0.1f    /* 测速低通滤波系数 */
 
+/* 电气角帧修正：elec = mech*pp - offset_rad + FOC_FRAME_CORR。
+ * 根因已修（_set_duty 恢复正确 B/C 相序），此补丁清零。若日后仍偏可重扫帧。 */
+#define FOC_FRAME_CORR                0.0f   /* (rad) */
+
 /* SVPWM 配置 */
 #define FOC_SVPWM_OVM_ENABLE          1       /* 启用过调制 */
 #define FOC_SVPWM_OVM_LIMIT           1.05f   /* 过调制限制 */
