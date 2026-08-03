@@ -7,7 +7,7 @@
  *   MCU:       STM32G431CBU6 (170MHz, 128KB Flash, 32KB RAM)
  *   PWM:       TIM3 CH1(PA6), CH2(PA4), CH3(PB0), center-aligned 25kHz
  *   Current:   ADC1_IN4(PA3) + ADC2_IN14(PB11), injected, TIM3 TRGO trigger
- *   Sense:     10mΩ shunt + INA240A2 (gain=20)
+ *   Sense:     10mΩ shunt + INA240A2 (gain=50V/V)
  *   Driver EN: PA5 (U), PA7 (V), PB1 (W) - individual GPIO enables
  *   Encoder:   AS5600 via I2C2 (PB10=SCL, PB11=SDA) - NOTE: PB11 shared!
  *              Actually I2C2: PB10=SCL, PB11=SDA conflicts with ADC2_IN14(PB11)
@@ -61,17 +61,18 @@
 #define ADC_W_GPIO_PORT         GPIOB
 #define ADC_W_PIN               GPIO_PIN_11
 
-/* Current sensing: 10mΩ shunt + INA240A2 gain=20
- * V_adc = I_phase * 0.010 * 20 = I_phase * 0.2
- * I_phase = V_adc / 0.2 = ADC_raw * 3.3 / 4096 / 0.2
- * I_phase = ADC_raw * 0.004028 A/count
+/* Current sensing: 10mΩ shunt + INA240A2 (gain=50V/V)
+ * V_adc = I_phase * 0.010 * 50 = I_phase * 0.5
+ * I_phase = raw * 3.3 / 4096 / 0.5 - 1.65 / 0.5 = raw * 0.001611 - 3.3  (±3.3A 满量程)
  */
-#define CURRENT_SENSE_GAIN      20.0f
+#define CURRENT_SENSE_GAIN      50.0f
 #define SHUNT_RESISTANCE        0.010f
 #define ADC_VREF                3.3f
 #define ADC_RESOLUTION          4096.0f
+#define ADC_OFFSET_VOLT         1.65f   /* INA240 输出中点 (Vref)，双向电流零点 */
 #define CURRENT_ADC_SCALE       (ADC_VREF / (ADC_RESOLUTION * SHUNT_RESISTANCE * CURRENT_SENSE_GAIN))
-/* = 3.3 / (4096 * 0.01 * 20) = 3.3 / 819.2 = 0.004028 A/count */
+#define CURRENT_ADC_OFFSET_A    (ADC_OFFSET_VOLT / (SHUNT_RESISTANCE * CURRENT_SENSE_GAIN))
+/* = 3.3 / (4096 * 0.01 * 50) = 0.001611 A/count ； 1.65 / 0.5 = 3.3 A */
 
 /* ADC offset (midpoint) for bidirectional current measurement */
 #define ADC_OFFSET_NOMINAL      2048

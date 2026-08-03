@@ -25,22 +25,32 @@
 
 #include "hal/hal_encoder.h"
 #include "i2c.h"
-#include <math.h>
 #include "dma.h"
+#include "hw_config.h"
+#include <math.h>
 
-#define AS5600_RESOLUTION  4096.0f
-#define _2PI               6.28318530718f
-#define RAD_PER_COUNT      (_2PI / AS5600_RESOLUTION)
-#define FOC_HCLK_HZ        170000000.0f   /* G431 HCLK = 170MHz，DWT 计数频率 */
-#define AS5600_DIR_SIGN    -1  /* 编码器方向：实测 +iq 命令产生反向旋转(mech_spd 为负)，
-                                   翻 -1 使 +iq→正向转矩、速度反馈与命令同向。 */
-#define SPD_EST_WINDOW     256   /* 速度估计滑动窗口：~8kHz 真实更新下 ≈32ms。
-                                    低速时单样本位移 <1LSB，长窗把量化噪声平均掉，测速更平滑。
-                                    响应滞后 ~16ms，低速应用可接受；若需快响应可回调 128。 */
-#define ENC_STEP_MAX       0.3f  /* 单步合法性阈值 rad：300rad/s@8kHz≈0.0375，取 ~8× 裕量；
-                                    超阈值判为 I2C 脏读，丢这一拍（连续丢→看门狗兜底） */
-#define ENC_WDG_S          0.0005f  /* 500µs 无新角度 → 标记需线程态恢复（正常 ~125µs/次） */
-#define SPD_VALID_MAX      1000.0f  /* 速度合法性上限 rad/s（机械上限 300） */
+#define AS5600_RESOLUTION       (float)ENCODER_RESOLUTION       /* 4096 LSB/圈 */
+#define AS5600_I2C_ADDR         ENCODER_I2C_ADDR                /* 0x36<<1 */
+#define AS5600_REG_RAW_ANGLE    0x0CU                           /* RAW ANGLE (12bit) */
+#define AS5600_READ_TIMEOUT_MS  10U                             /* 线程态阻塞读超时 */
+#define _2PI                    6.28318530718f
+#define RAD_PER_COUNT           (_2PI / AS5600_RESOLUTION)
+#define FOC_HCLK_HZ             (float)SYS_CLOCK_HZ             /* G431 HCLK = 170MHz，DWT 计数频率 */
+#define AS5600_DIR_SIGN         -1  /* 编码器方向：实测 +iq 命令产生反向旋转(mech_spd 为负)，
+                                       翻 -1 使 +iq→正向转矩、速度反馈与命令同向。 */
+#define SPD_EST_WINDOW          256   /* 速度估计滑动窗口：~8kHz 真实更新下 ≈32ms。
+                                        低速时单样本位移 <1LSB，长窗把量化噪声平均掉，测速更平滑。
+                                        响应滞后 ~16ms，低速应用可接受；若需快响应可回调 128。 */
+#define ENC_STEP_MAX            0.3f  /* 单步合法性阈值 rad：300rad/s@8kHz≈0.0375，取 ~8× 裕量；
+                                        超阈值判为 I2C 脏读，丢这一拍（连续丢→看门狗兜底） */
+#define ENC_WDG_S               0.0005f  /* 500µs 无新角度 → 标记需线程态恢复（正常 ~125µs/次） */
+#define SPD_VALID_MAX           1000.0f  /* 速度合法性上限 rad/s（机械上限 300） */
+
+/* ---- 开环合成角（调试）：与 foc_main g_motor 的 14 对极保持同步 ---- */
+#define OPENLOOP_EL_STEP        0.002f    /* 每拍电角度增量 ≈ 12.5kHz 更新 × 0.002 ≈ 25 rad/s el */
+#define OPENLOOP_UPDATE_HZ      12500.0f  /* 合成角等效更新率（PWM 半周期） */
+#define OPENLOOP_SPD_SCALE      0.05f     /* 上报机械速度系数 */
+#define OPENLOOP_POLE_PAIRS     14
 
 /* ---- 发布端内部状态（只由发布端写；首次建基准/线程态恢复在临界区内例外写） ---- */
 static int32_t  _prev_raw_val;
@@ -77,6 +87,18 @@ static void _publish(float angle, uint32_t now_cyc)
     _pub_last_cyc = now_cyc;
     __set_PRIMASK(pm);
     _pub_seq++;
+}
+
+/* 背靠背重启 DMA 读（唯一重启入口：发布端/错误回调/线程态恢复共用）。
+ * 失败只计数并置恢复标志，绝不在回调内循环重试。 */
+static void _start_dma(void)
+{
+    if (HAL_I2C_Mem_Read_DMA(&hi2c2, AS5600_I2C_ADDR, AS5600_REG_RAW_ANGLE,
+                             I2C_MEMADD_SIZE_8BIT, _dma_buf, 2) != HAL_OK)
+    {
+        _err_cnt++;
+        _need_recovery = 1;   /* 交线程态 encoder_try_recovery */
+    }
 }
 
 /* 发布端主体：解算一帧角度 → 发布 → 背靠背重启 DMA */
@@ -129,11 +151,7 @@ static void _on_i2c_done(void)
     }
 
     /* 背靠背重启：先消费 _dma_buf 再重启，单缓冲安全（重启 ~120µs 后才再写缓冲） */
-    if (HAL_I2C_Mem_Read_DMA(&hi2c2, 0x36 << 1, 0x0C, 1, _dma_buf, 2) != HAL_OK)
-    {
-        _err_cnt++;
-        _need_recovery = 1;   /* 不在回调内循环重试，交线程态 encoder_try_recovery */
-    }
+    _start_dma();
 }
 
 /*
@@ -151,14 +169,9 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
     if (hi2c != &hi2c2) return;
     _err_cnt++;
     if (_ready && !g_openloop)
-    {
-        if (HAL_I2C_Mem_Read_DMA(&hi2c2, 0x36 << 1, 0x0C, 1, _dma_buf, 2) != HAL_OK)
-            _need_recovery = 1;
-    }
+        _start_dma();
     else
-    {
         _need_recovery = 1;
-    }
 }
 
 /*
@@ -189,7 +202,8 @@ void encoder_try_recovery(void)
     HAL_I2C_Init(&hi2c2);
     HAL_NVIC_ClearPendingIRQ(DMA1_Channel1_IRQn);
     uint8_t buf[2];
-    if (HAL_I2C_Mem_Read(&hi2c2, 0x36 << 1, 0x0C, I2C_MEMADD_SIZE_8BIT, buf, 2, 10) == HAL_OK)
+    if (HAL_I2C_Mem_Read(&hi2c2, AS5600_I2C_ADDR, AS5600_REG_RAW_ANGLE,
+                         I2C_MEMADD_SIZE_8BIT, buf, 2, AS5600_READ_TIMEOUT_MS) == HAL_OK)
     {
         int32_t raw = (int32_t)((((uint16_t)buf[0]) << 8) | (uint16_t)buf[1]) & 0x0FFF;
         float a = (float)raw * RAD_PER_COUNT;
@@ -205,8 +219,7 @@ void encoder_try_recovery(void)
         __set_PRIMASK(pm);
     }
     /* 无论读成功与否都重启 DMA，让发布端恢复后台刷新 */
-    if (HAL_I2C_Mem_Read_DMA(&hi2c2, 0x36 << 1, 0x0C, 1, _dma_buf, 2) != HAL_OK)
-        _err_cnt++;
+    _start_dma();
     _need_recovery = 0;
 }
 
@@ -239,9 +252,9 @@ static float _get_angle(void)
     if (g_openloop)
     {
         static float syn = 0;
-        syn += 0.002f;  /* ~12.5kHz * 0.002 ≈ 25 rad/s el */
-        if (syn > 6.283185f) syn -= 6.283185f;
-        _mech_speed = 0.05f * 12500.0f / 14.0f;  /* 等效机械速度 */
+        syn += OPENLOOP_EL_STEP;
+        if (syn > _2PI) syn -= _2PI;
+        _mech_speed = OPENLOOP_SPD_SCALE * OPENLOOP_UPDATE_HZ / (float)OPENLOOP_POLE_PAIRS;
         g_dbg_mech  = syn * AS5600_DIR_SIGN;   /* 位置环反馈须与 get_angle 同符号 */
         return syn * AS5600_DIR_SIGN;
     }
@@ -250,7 +263,8 @@ static float _get_angle(void)
     {
         /* 线程态首次：阻塞读建基准（此时无 DMA 在途，发布端不会触发） */
         uint8_t buf[2];
-        HAL_I2C_Mem_Read(&hi2c2, 0x36 << 1, 0x0C, I2C_MEMADD_SIZE_8BIT, buf, 2, 10);
+        HAL_I2C_Mem_Read(&hi2c2, AS5600_I2C_ADDR, AS5600_REG_RAW_ANGLE,
+                         I2C_MEMADD_SIZE_8BIT, buf, 2, AS5600_READ_TIMEOUT_MS);
         int32_t raw = (int32_t)((((uint16_t)buf[0]) << 8) | (uint16_t)buf[1]) & 0x0FFF;
         float a = (float)raw * RAD_PER_COUNT;
         uint32_t now = DWT->CYCCNT;
@@ -261,7 +275,7 @@ static float _get_angle(void)
         _mech_speed    = 0.0f;
         _publish(a, now);
         _ready = 1;
-        HAL_I2C_Mem_Read_DMA(&hi2c2, 0x36 << 1, 0x0C, 1, _dma_buf, 2);
+        _start_dma();
         g_dbg_mech = a * AS5600_DIR_SIGN;   /* 位置环反馈须与 get_angle 同符号 */
         return a * AS5600_DIR_SIGN;
     }
@@ -285,7 +299,6 @@ static float _get_angle(void)
         dt = ENC_WDG_S;
         spd *= 0.9f;
     }
-    if (dt < 0.0f) dt = 0.0f;
     float predicted = a0 + spd * dt;
 
     g_dbg_mech = predicted * AS5600_DIR_SIGN;   /* 位置环反馈须与 get_angle 同符号(否则位置环正反馈→一直转) */

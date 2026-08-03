@@ -16,7 +16,10 @@
 #include "usart.h"
 #include "stm32g4xx_hal.h"
 
-#define UART_RX_RING_SZ 256u
+/* 环形缓冲容量必须为 2 的幂：头/尾指针用 & 掩码递进（省 % 除法），且回绕
+ * 判定只需指针相等（单写者 ISR + 单读者主循环，无锁安全）。 */
+#define UART_RX_RING_SZ  256u
+#define UART_RX_RING_MASK (UART_RX_RING_SZ - 1u)
 static volatile uint8_t  g_rx_ring[UART_RX_RING_SZ];
 static volatile uint32_t g_rx_head;   /* ISR 写指针 */
 static volatile uint32_t g_rx_tail;   /* 主循环读指针 */
@@ -42,15 +45,16 @@ static void _init(uint32_t baud)
     __HAL_UART_ENABLE_IT(&huart1, UART_IT_RXNE);
 }
 
-/* USART1 中断服务函数：仅处理接收（覆盖 startup 中的 WEAK 默认实现） */
+/* USART1 中断服务函数：仅处理接收（覆盖 startup 中的 WEAK 默认实现）。
+ * 读 RDR 一次即同时清 RXNE 与 ORE；孤立的 ORE（无 RXNE）再走一次读清标志。 */
 void USART1_IRQHandler(void)
 {
     uint32_t isr = huart1.Instance->ISR;
 
     if (isr & UART_FLAG_RXNE)
     {
-        uint8_t b = (uint8_t)(huart1.Instance->RDR & 0xFF);
-        uint32_t next = (g_rx_head + 1u) % UART_RX_RING_SZ;
+        uint8_t b = (uint8_t)huart1.Instance->RDR;
+        uint32_t next = (g_rx_head + 1u) & UART_RX_RING_MASK;
         if (next != g_rx_tail)
         {
             g_rx_ring[g_rx_head] = b;
@@ -61,10 +65,7 @@ void USART1_IRQHandler(void)
             g_rx_drop++;   /* 缓冲满，丢弃（极少见：ring 256B，命令很短） */
         }
     }
-
-    /* 溢出错误处理：必须按"先读 ISR 再读 RDR"的顺序清除 ORE，
-       否则 RX 会卡死不再产生 RXNE。 */
-    if (isr & UART_FLAG_ORE)
+    else if (isr & UART_FLAG_ORE)
     {
         (void)huart1.Instance->ISR;
         (void)huart1.Instance->RDR;
@@ -82,7 +83,7 @@ static uint8_t _getchar(char *c)
 {
     if (g_rx_head == g_rx_tail) return 0;   /* 缓冲空 */
     *c = (char)g_rx_ring[g_rx_tail];
-    g_rx_tail = (g_rx_tail + 1u) % UART_RX_RING_SZ;
+    g_rx_tail = (g_rx_tail + 1u) & UART_RX_RING_MASK;
     return 1;
 }
 

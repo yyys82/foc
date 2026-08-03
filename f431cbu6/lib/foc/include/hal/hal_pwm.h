@@ -8,6 +8,7 @@ extern "C" {
 #endif
 
 typedef struct {
+    void  (*init)(void);
     void  (*set_duty)(float ta, float tb, float tc);
     void  (*enable)(uint8_t en);
     float (*get_vbus)(void);

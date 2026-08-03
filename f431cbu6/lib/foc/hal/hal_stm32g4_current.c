@@ -6,6 +6,12 @@
  */
 #include "hal/hal_current.h"
 #include "adc.h"
+#include "hw_config.h"
+
+/* i = raw*CURRENT_ADC_SCALE - CURRENT_ADC_OFFSET_A，编译期折叠为每相 1 乘 1 减
+ * (原实现 raw→V→(V-1.65)/0.5 多步浮点，25kHz ISR 内冗余) */
+#define CUR_SCALE_A_CNT  CURRENT_ADC_SCALE      /* ≈ 0.001611 A/count */
+#define CUR_OFFSET_A     CURRENT_ADC_OFFSET_A   /* = 3.3 A */
 
 static void _init(void)
 {
@@ -32,14 +38,9 @@ static void _read(float *ia, float *ib, float *ic)
     /* 注入同步下两机同刻采样、同刻完成；在本(主机 JEOC)中断里读两个 JDR1 均为本拍新值。
      * 不变量：从机(ADC2)采样时间/序列长度 不得大于 主机(ADC1)，否则从机晚完成、
      * 主机 JEOC 会读到从机上一拍 JDR。当前两边同为 12.5cyc、JL=0，满足。 */
-    uint32_t v1 = (uint16_t)(ADC1->JDR1 & 0xFFFF);   /* ADC1=PA3，采 V 相 → ib */
-    uint32_t v2 = (uint16_t)(ADC2->JDR1 & 0xFFFF);   /* ADC2=PB11，采 W 相 → ic */
+    float i_b = (float)(ADC1->JDR1 & 0xFFF) * CUR_SCALE_A_CNT - CUR_OFFSET_A;  /* ADC1=PA3 → V 相 → ib */
+    float i_c = (float)(ADC2->JDR1 & 0xFFF) * CUR_SCALE_A_CNT - CUR_OFFSET_A;  /* ADC2=PB11 → W 相 → ic */
 
-    float va = (float)v1 * 3.3f / 4096.0f;
-    float vb = (float)v2 * 3.3f / 4096.0f;
-
-    float i_b = (va - 1.65f) / (50.0f * 0.01f);
-    float i_c = (vb - 1.65f) / (50.0f * 0.01f);
     *ia = -(i_b) - (i_c);
     *ib = i_b;
     *ic = i_c;
@@ -47,8 +48,13 @@ static void _read(float *ia, float *ib, float *ic)
 
 static void _delay_us(uint32_t us)
 {
-    uint32_t ticks = us * 170;
-    for (uint32_t i = 0; i < ticks; i++) __NOP();
+    /* DWT 周期计数精确延时（替代原 NOP 空转 + 魔法常数 170）：
+     * 比循环更准、不受 CPU 流水/优化影响；中断抢占只会拉长延时，校准平均无碍。 */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CTRL |= 1;
+    uint32_t start = DWT->CYCCNT;
+    uint32_t ticks = us * (SYS_CLOCK_HZ / 1000000U);
+    while ((uint32_t)(DWT->CYCCNT - start) < ticks) {}
 }
 
 const hal_current_t g_hal_current = {

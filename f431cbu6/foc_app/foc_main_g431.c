@@ -126,16 +126,8 @@ void foc_main_init(void)
     foc_core_init(&g_core, &g_motor,
                   &g_hal_current, &g_hal_encoder, &g_hal_pwm);
 
-    /* PWM 使能 */
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET);
-    HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
-    HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
-    HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_SET);
+    /* PWM 初始化（内部：EN 拉低 → 启 3 路 PWM → EN 拉高） */
+    g_hal_pwm.init();
     g_hal_pwm.enable(1);
 
     /* 对齐 (ADC/I2C 中断均未开，确保编码器阻塞读不受干扰) */
